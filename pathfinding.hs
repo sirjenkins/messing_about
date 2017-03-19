@@ -57,15 +57,45 @@ type PathHeap = U.PSQ Location Priority
 -- PathState ( Terrain Costs, Cumulative Cost, Estimated Cost, Location Heap )
 type PathState = (Terrain, V.Vector Cost, V.Vector Cost, PathHeap)
 
+vpos :: Location -> Int
+vpos (x,y) = y * yMax + x
 
-computeShortestPath :: State PathState ()
-computeShortestPath = do
+computeShortestPath :: Location -> Int -> State PathState Int
+computeShortestPath s0 dK = do
 	(terrain, cumulative, estimated, heap) <- get
-	let g (x,y)   = cumulative V.! y * yMax + x
-	let c (x,y)   = terrain    V.! y * yMax + x
-	let rhs (x,y) = estimated  V.! y * yMax + x
+
+	i <- g s0
+	j <- rhs s0
+	k <- c s0
+	--let calcKey s = ( (min (g s) (rhs s)) + (h s0 s) + dK, min (g s) (rhs s) )
 
 	put (terrain, cumulative, estimated, heap)
+	return dK
+
+rhs :: Location -> State PathState Int
+rhs s = do
+	(_, _, estimated, _) <- get
+	return $ estimated V.! (vpos s)
+	
+rhsset :: Location -> Cost -> State PathState ()
+rhsset (x,y) c = do
+	(terrain, cumulative, estimated, heap) <- get
+	put (terrain, cumulative, estimated V.// [(y * yMax + x, c)], heap)
+
+g :: Location -> State PathState Int
+g s = do
+	(_, cumulative, _, _) <- get
+	return $ cumulative V.! (vpos s)
+	
+gset :: Location -> Cost -> State PathState ()
+gset (x,y) c = do
+	(terrain, cumulative, estimated, heap) <- get
+	put (terrain, cumulative V.// [(y * yMax + x, c)], estimated, heap)
+
+c :: Location -> State PathState Int
+c s = do
+	(terrain, _, _, _) <- get
+	return $ terrain V.! (vpos s)
 
 hook = terrain
 	where
@@ -80,6 +110,14 @@ hook = terrain
 
 h :: Location -> Location -> Int
 h start end = 0
+
+printVector :: V.Vector Cost -> IO ()
+printVector vector = let
+	loop v cnt
+		| cnt >= yMax = return ()
+		| otherwise = putStrLn (show row) >> loop vec (cnt + 1)
+		where (row, vec) = V.splitAt yMax v
+	in loop vector 1
 
 -- procedure Main ()
 -- 	s₊ = s₀ ;
