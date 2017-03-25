@@ -41,106 +41,91 @@
 import qualified Data.Vector.Unboxed as V
 import qualified Data.PSQueue as U
 import Control.Monad.State
+import Control.Monad.Reader
 
 xMax = 10 :: Int
 yMax = 10 :: Int
 costMax = 1000 :: Int
 
-type Location = (Int, Int)
-type Cost = Int
-type Terrain = V.Vector Cost
+data Location = Location Int Int deriving (Read, Show, Eq, Ord)
+data Goal 	  = Goal Int Int 	 deriving (Read, Show, Eq, Ord)
+data Start 	  = Start Int Int 	 deriving (Read, Show, Eq, Ord)
 
- -- Priority ( min(g(s), rhs(s)) + h(s₀, s) + k m, min(g(s), rhs(s)) )
-type Priority = (Cost, Cost)
+class Path a where
+	h :: Path b => a -> b -> Int
+	y :: a -> Int
+	x :: a -> Int
+
+instance Path Location where
+	h a b = 0
+	y (Location x y) = y
+	x (Location x y) = x
+
+instance Path Goal where
+	h a b = 0
+	y (Goal x y) = y
+	x (Goal x y) = x
+
+instance Path Start where
+	h a b = 0
+	y (Start x y) = y
+	x (Start x y) = x
+
+
+type Cost 			= Int
+type DeltaCost 		= Int
+type Terrain 		= V.Vector Cost
+type EstimateCost 	= V.Vector Cost
+type ForwardCost 	= V.Vector Cost
+
+newtype Priority = Priority (Int, Int) deriving (Read, Show, Eq, Ord)
 type PathHeap = U.PSQ Location Priority
 
--- PathState ( Terrain Costs, Cumulative Cost, Estimated Cost, Location Heap )
-type PathState = (Terrain, V.Vector Cost, V.Vector Cost, PathHeap)
+data PathEnv = PathEnv { terrain 	:: Terrain
+						, goal 		:: Goal
+						, start 	:: Start
+						, deltaK 	:: Cost }
 
-vpos :: Location -> Int
-vpos (x,y) = y * yMax + x
+data PathVars = PathVars{ getEstimate :: EstimateCost, getForward :: ForwardCost }
+type PathState = State PathVars
 
-computeShortestPath :: PathHeap -> Location -> Int -> State PathState ()
-computeShortestPath pq s0 dK = do
-	g_s0 <- g s0
-	rhs_s0 <- rhs s0
+vpos :: Path a => a -> Int
+vpos s = (y s) * yMax + (x s)
 
-	g_u <- g u
-	rhs_u <- rhs u
-	let u_prio' = calcPrio u g_u rhs_u
-
-	if u_prio < (calcPrio s0 g_s0 rhs_s0) || rhs_s0 > g_s0 then
-
-		if u_prio < u_prio' then computeShortestPath (U.insert u u_prio' pq) s0 dK
-		else
-			if g_u > rhs_u then
-				gset u rhs_u
-
-[(x,y) | x <- [-1,0,1], y <- [-1,0,1]]
-
-- 			U.Remove(u) ;
--- 			for all s∈Pred(u)
--- 				if (s ≠ s goal)
--- 					rhs(s) = min( rhs(s), c(s,u) + g(u));
--- 				UpdateVertex ( s) ;
-
-			else return ()
-	else return ()
-
-	where
-		calcPrio s g_s rhs_s = ( (min g_s rhs_s) + (h s0 s) + dK, min g_s rhs_s )
-		(u, u_prio, pq') = maybe ((0,0), (costMax, costMax), pq) (\(kp, pq') -> (U.key kp, U.prio kp, pq')) $ U.minView pq
-
-updateNeighbors goal u _ [] = do return ()
-updateNeighbors goal u (x,y) (dx,dy):ts
-	| x' >= xMax || y' >= yMax = do return ()
-	| x' < 0     || y' < 0     = do return ()
-	| u == goal 			   = do return ()
-	| otherwise				   = do
-	rhsset s $ min rhs s, c s u + g u 
-	where
-		x' = x + dx
-		y' = y + dy
-		s = (x', y')
-
-rhs :: Location -> State PathState Cost
-rhs s = do
-	(_, _, estimated, _) <- get
-	return $ estimated V.! (vpos s)
+computeShortestPath :: ReaderT PathEnv PathState EstimateCost
+computeShortestPath = do
+	env <- ask
+	ss  <- get
 	
-rhsset :: Location -> Cost -> State PathState ()
-rhsset (x,y) c = do
-	(terrain, cumulative, estimated, heap) <- get
-	put (terrain, cumulative, estimated V.// [(y * yMax + x, c)], heap)
+	let s0 = start env
+	let s0_prio = calcPrio s0 ss env
 
-g :: Location -> State PathState Cost
-g s = do
-	(_, cumulative, _, _) <- get
-	return $ cumulative V.! (vpos s)
+	return $ getEstimate ss
+	where
+		calcPrio s ss env = evalState ( runReaderT (calcPriority s) env) ss
+
+calcPriority :: Path a => a -> ReaderT PathEnv PathState Priority
+calcPriority s = do
+	(PathVars e f) <- get
+	let (g, rhs) = (e V.! vpos s, f V.! vpos s)
+	dK <- asks deltaK
+	s0 <- asks start
 	
-gset :: Location -> Cost -> State PathState ()
-gset (x,y) c = do
-	(terrain, cumulative, estimated, heap) <- get
-	put (terrain, cumulative V.// [(y * yMax + x, c)], estimated, heap)
+	return $ Priority ( (min g rhs) + (h s0 s) + dK, min g rhs )
 
-c :: Location -> State PathState Cost
-c s = do
-	(terrain, _, _, _) <- get
-	return $ terrain V.! (vpos s)
-
-hook = terrain
+hook = evalState ( runReaderT computeShortestPath (PathEnv terrain (Goal 9 9) (Start 0 0) 0) ) pathvars
 	where
 		terrain :: V.Vector Int
 		terrain = V.generate (xMax * yMax) (\i -> if mod i 3 == 0 || mod i 2 == 1 then 1 else 5)
 
-		cumulative :: V.Vector Int
-		cumulative = V.replicate (xMax * yMax) costMax
+		estimate :: V.Vector Int
+		estimate = V.replicate (xMax * yMax) costMax
 
-		estimated :: V.Vector Int
-		estimated = V.replicate (xMax * yMax) costMax
+		forward :: V.Vector Int
+		forward = V.replicate (xMax * yMax) costMax
 
-h :: Location -> Location -> Int
-h start end = 0
+		pathvars = PathVars estimate forward
+
 
 printVector :: V.Vector Cost -> IO ()
 printVector vector = let
