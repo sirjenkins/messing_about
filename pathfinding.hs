@@ -60,19 +60,50 @@ type PathState = (Terrain, V.Vector Cost, V.Vector Cost, PathHeap)
 vpos :: Location -> Int
 vpos (x,y) = y * yMax + x
 
-computeShortestPath :: Location -> Int -> State PathState Int
-computeShortestPath s0 dK = do
-	(terrain, cumulative, estimated, heap) <- get
+computeShortestPath :: PathHeap -> Location -> Int -> State PathState ()
+computeShortestPath pq s0 dK = do
+	g_s0 <- g s0
+	rhs_s0 <- rhs s0
 
-	i <- g s0
-	j <- rhs s0
-	k <- c s0
-	--let calcKey s = ( (min (g s) (rhs s)) + (h s0 s) + dK, min (g s) (rhs s) )
+	g_u <- g u
+	rhs_u <- rhs u
+	let u_prio' = calcPrio u g_u rhs_u
 
-	put (terrain, cumulative, estimated, heap)
-	return dK
+	if u_prio < (calcPrio s0 g_s0 rhs_s0) || rhs_s0 > g_s0 then
 
-rhs :: Location -> State PathState Int
+		if u_prio < u_prio' then computeShortestPath (U.insert u u_prio' pq) s0 dK
+		else
+			if g_u > rhs_u then
+				gset u rhs_u
+
+[(x,y) | x <- [-1,0,1], y <- [-1,0,1]]
+
+- 			U.Remove(u) ;
+-- 			for all s∈Pred(u)
+-- 				if (s ≠ s goal)
+-- 					rhs(s) = min( rhs(s), c(s,u) + g(u));
+-- 				UpdateVertex ( s) ;
+
+			else return ()
+	else return ()
+
+	where
+		calcPrio s g_s rhs_s = ( (min g_s rhs_s) + (h s0 s) + dK, min g_s rhs_s )
+		(u, u_prio, pq') = maybe ((0,0), (costMax, costMax), pq) (\(kp, pq') -> (U.key kp, U.prio kp, pq')) $ U.minView pq
+
+updateNeighbors goal u _ [] = do return ()
+updateNeighbors goal u (x,y) (dx,dy):ts
+	| x' >= xMax || y' >= yMax = do return ()
+	| x' < 0     || y' < 0     = do return ()
+	| u == goal 			   = do return ()
+	| otherwise				   = do
+	rhsset s $ min rhs s, c s u + g u 
+	where
+		x' = x + dx
+		y' = y + dy
+		s = (x', y')
+
+rhs :: Location -> State PathState Cost
 rhs s = do
 	(_, _, estimated, _) <- get
 	return $ estimated V.! (vpos s)
@@ -82,7 +113,7 @@ rhsset (x,y) c = do
 	(terrain, cumulative, estimated, heap) <- get
 	put (terrain, cumulative, estimated V.// [(y * yMax + x, c)], heap)
 
-g :: Location -> State PathState Int
+g :: Location -> State PathState Cost
 g s = do
 	(_, cumulative, _, _) <- get
 	return $ cumulative V.! (vpos s)
@@ -92,7 +123,7 @@ gset (x,y) c = do
 	(terrain, cumulative, estimated, heap) <- get
 	put (terrain, cumulative V.// [(y * yMax + x, c)], estimated, heap)
 
-c :: Location -> State PathState Int
+c :: Location -> State PathState Cost
 c s = do
 	(terrain, _, _, _) <- get
 	return $ terrain V.! (vpos s)
