@@ -42,90 +42,144 @@ import qualified Data.Vector.Unboxed as V
 import qualified Data.PSQueue as U
 import Control.Monad.State
 import Control.Monad.Reader
+import Data.Maybe (fromMaybe)
 
 xMax = 10 :: Int
 yMax = 10 :: Int
 costMax = 1000 :: Int
 
-data Location = Location Int Int deriving (Read, Show, Eq, Ord)
-data Goal 	  = Goal Int Int 	 deriving (Read, Show, Eq, Ord)
-data Start 	  = Start Int Int 	 deriving (Read, Show, Eq, Ord)
+data Location
+	= Location Int Int
+	| Goal Int Int 
+	| Start Int Int deriving (Read, Show, Eq, Ord)
 
-class Path a where
-	h :: Path b => a -> b -> Int
-	y :: a -> Int
-	x :: a -> Int
-
-instance Path Location where
-	h a b = 0
-	y (Location x y) = y
-	x (Location x y) = x
-
-instance Path Goal where
-	h a b = 0
-	y (Goal x y) = y
-	x (Goal x y) = x
-
-instance Path Start where
-	h a b = 0
-	y (Start x y) = y
-	x (Start x y) = x
-
+x (Location x y) = x
+x (Goal x y)	 = x
+x (Start x y)	 = x
+y (Location x y) = y
+y (Goal x y) 	 = y
+y (Start x y)	 = y
 
 type Cost 			= Int
 type DeltaCost 		= Int
-type Terrain 		= V.Vector Cost
-type EstimateCost 	= V.Vector Cost
-type ForwardCost 	= V.Vector Cost
+type CostCache 		= V.Vector Cost
+type EstimateCache 	= V.Vector Cost
+type ForwardCache 	= V.Vector Cost
 
 newtype Priority = Priority (Int, Int) deriving (Read, Show, Eq, Ord)
 type PathHeap = U.PSQ Location Priority
 
-data PathEnv = PathEnv { terrain 	:: Terrain
-						, goal 		:: Goal
-						, start 	:: Start
+data PathEnv = PathEnv {  cost 		:: CostCache
+						, goal 		:: Location
+						, start 	:: Location
 						, deltaK 	:: Cost }
 
-data PathVars = PathVars{ getEstimate :: EstimateCost, getForward :: ForwardCost }
-type PathState = State PathVars
+--data PathVars = PathVars {
+--	  gset		:: Location -> Cost -> (Location -> Cost)
+--	, g 		:: Location -> Cost
+--	, rhsset 	:: Location -> Cost -> (Location -> Cost)
+--	, rhs 		:: Location -> Cost
+--	, calcPrio 	:: Int -> Int -> Location -> Priority
+--	, getPQ 	:: PathHeap  }
 
-vpos :: Path a => a -> Int
+--type PathState = State PathVars
+
+-- need bounds checking
+vpos :: Location -> Int
 vpos s = (y s) * yMax + (x s)
 
-computeShortestPath :: ReaderT PathEnv PathState EstimateCost
-computeShortestPath = do
-	env <- ask
-	ss  <- get
-	
-	let s0 = start env
-	let s0_prio = calcPrio s0 ss env
 
-	return $ getEstimate ss
+neighbors (Goal x y) = neighbors (Location x y)
+neighbors (Start  x y) = neighbors (Location x y)
+neighbors s@(Location x y) = calcNeighbors neighborhood s
 	where
-		calcPrio s ss env = evalState ( runReaderT (calcPriority s) env) ss
+		neighborhood :: [(Int, Int)]
+		neighborhood = [(1,1),(1,0),(1,-1),(0,1),(0,-1),(-1,1),(-1,0),(-1,-1)]
 
-calcPriority :: Path a => a -> ReaderT PathEnv PathState Priority
-calcPriority s = do
-	(PathVars e f) <- get
-	let (g, rhs) = (e V.! vpos s, f V.! vpos s)
-	dK <- asks deltaK
-	s0 <- asks start
-	
-	return $ Priority ( (min g rhs) + (h s0 s) + dK, min g rhs )
+		calcNeighbors :: [(Int, Int)] -> Location -> [Location]
+		calcNeighbors [] s@(Location x y) = []
+		calcNeighbors n (Goal x y) = calcNeighbors n (Location x y)
+		calcNeighbors n (Start x y) = calcNeighbors n (Location x y)
+		calcNeighbors ((dx, dy):ns) s@(Location x y)
+			| x' >= xMax || x' < 0 = calcNeighbors ns s
+			| y' >= yMax || y' < 0 = calcNeighbors ns s
+			| otherwise = (Location x' y') : calcNeighbors ns s
+			where
+				x' = x + dx :: Int
+				y' = y + dy :: Int
 
-hook = evalState ( runReaderT computeShortestPath (PathEnv terrain (Goal 9 9) (Start 0 0) 0) ) pathvars
+--      goal        start       -------------prio -------------------                       gs                               g                               rs                                r                 pq
+loop :: Location -> Location -> (Cost -> Cost -> Location -> Priority) -> (Location -> Cost -> (Location -> Cost)) -> (Location -> Cost) -> (Location -> Cost -> (Location -> Cost)) -> (Location -> Cost) -> PathHeap -> (Location -> Cost)
+loop goal start calcPrio gs g rs r pq
+	| prio_top < prio_start || r start > g start =
+		if prio_top < prio_top' then loop goal start calcPrio gs g rs r $ U.insert top prio_top' pq'
+		else if g top > r top then undefined
+-- 			g(u)= rhs(u);
+-- 			U.Remove(u) ;
+-- 			for all s∈Pred(u)
+-- 				if (s ≠ s goal)
+-- 					rhs(s) = min( rhs(s), c(s,u) + g(u));
+-- 				UpdateVertex ( s) ;
+
+		else undefined
+	| otherwise = undefined
 	where
-		terrain :: V.Vector Int
-		terrain = V.generate (xMax * yMax) (\i -> if mod i 3 == 0 || mod i 2 == 1 then 1 else 5)
+		prio_start = calcPrio (g start) (r start) start
+		(top, prio_top, pq') = case U.minView pq of
+									Nothing -> (start, prio_start, pq)
+									Just (b, pq') -> (U.key b, U.prio b, pq')
+		prio_top' = calcPrio (g top) (r top) top
 
-		estimate :: V.Vector Int
-		estimate = V.replicate (xMax * yMax) costMax
+adjustForwards g_u r pq [] = (r, pq)
+adjustForwards g_u r pq (s:ss) = undefined
 
-		forward :: V.Vector Int
-		forward = V.replicate (xMax * yMax) costMax
+init :: Location -> Location -> (Location -> Cost)
+init goal start = 
+	loop goal start calcPriority' gset' g' rhsset' rhs' pq
+--		( calcPriority' (g' goal) (rhs' goal) goal )
+--		( calcPriority' (g' start) (rhs' start) start )
+--		( g' start )
+--		( rhs' start )
 
-		pathvars = PathVars estimate forward
+	where
 
+		initdK = 0
+		initEstimate = V.replicate (xMax * yMax) costMax
+		initForward = V.replicate (xMax * yMax) costMax
+
+		gset' 	= setEstimateCache initEstimate
+		g' 		= gset' goal costMax
+		rhsset' = setForwardCache initForward
+		rhs' 	= rhsset' goal 0
+		pq 		= U.singleton goal $ calcPriority' (g' goal) (rhs' goal) goal
+		calcPriority' = calcPriority initdK (h start)
+
+
+--		pathvars = PathVars
+--			gset' g'
+--			rhsset' rhs'
+--			calcPriority' . U.singleton goal $ calcPriority' (g' goal) (rhs' goal) goal
+
+h a b = 0
+
+terrain :: V.Vector Int
+terrain = V.generate (xMax * yMax) (\i -> if mod i 3 == 0 || mod i 2 == 1 then 1 else 5)
+
+
+estimateCache :: EstimateCache -> (Location -> Cost)
+estimateCache estimate_cache = (V.!) estimate_cache . vpos
+
+setEstimateCache :: EstimateCache -> (Location -> Cost -> (Location -> Cost))
+setEstimateCache estimate_cache s c = estimateCache $ (V.//) estimate_cache [(vpos s, c)]
+
+forwardCache :: ForwardCache -> (Location -> Cost)
+forwardCache forward_cache = (V.!) forward_cache . vpos
+
+setForwardCache :: ForwardCache -> (Location -> Cost -> (Location -> Cost))
+setForwardCache forward_cache s c = forwardCache $ (V.//) forward_cache [(vpos s, c)]
+
+calcPriority :: Int -> (Location -> Int) -> Cost -> Cost -> Location -> Priority
+calcPriority dK h g rhs s = Priority ( (min g rhs) + (h s) + dK, min g rhs)
 
 printVector :: V.Vector Cost -> IO ()
 printVector vector = let
