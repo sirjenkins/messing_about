@@ -39,7 +39,7 @@
 -- 				UpdateVertex (s);
 
 import qualified Data.Vector.Unboxed as V
-import qualified Data.PSQueue as U
+import qualified Data.PSQueue as PSQ
 import Control.Monad.State
 import Control.Monad.Reader
 
@@ -47,73 +47,107 @@ xMax = 10 :: Int
 yMax = 10 :: Int
 costMax = 1000 :: Int
 
-data Location = Location Int Int deriving (Read, Show, Eq, Ord)
-data Goal 	  = Goal Int Int 	 deriving (Read, Show, Eq, Ord)
-data Start 	  = Start Int Int 	 deriving (Read, Show, Eq, Ord)
+data Location = Location Int Int | Goal Int Int | Start Int Int deriving (Read, Show, Eq, Ord)
 
-class Path a where
-	h :: Path b => a -> b -> Int
-	y :: a -> Int
-	x :: a -> Int
-
-instance Path Location where
-	h a b = 0
-	y (Location x y) = y
-	x (Location x y) = x
-
-instance Path Goal where
-	h a b = 0
-	y (Goal x y) = y
-	x (Goal x y) = x
-
-instance Path Start where
-	h a b = 0
-	y (Start x y) = y
-	x (Start x y) = x
+h :: Location -> Location -> Int
+h a b = 0
+coord :: Location -> (Int, Int)
+coord (Goal x y) = (x,y)
+coord (Start x y) = (x,y)
+coord (Location x y) = (x,y)
 
 
 type Cost 			= Int
 type DeltaCost 		= Int
 type Terrain 		= V.Vector Cost
-type EstimateCost 	= V.Vector Cost
-type ForwardCost 	= V.Vector Cost
+type EstimateCache 	= V.Vector Cost
+type ForwardCache 	= V.Vector Cost
 
 newtype Priority = Priority (Int, Int) deriving (Read, Show, Eq, Ord)
-type PathHeap = U.PSQ Location Priority
+type PathHeap = PSQ.PSQ Location Priority
 
 data PathEnv = PathEnv { terrain 	:: Terrain
-						, goal 		:: Goal
-						, start 	:: Start
-						, deltaK 	:: Cost }
+						, goal 		:: Location
+						, start 	:: Location
+						, calcPriority'  :: Cost -> Cost -> Location -> Priority }
 
-data PathVars = PathVars{ getEstimate :: EstimateCost, getForward :: ForwardCost }
+data PathVars = PathVars{ getEC :: EstimateCache, getFC :: ForwardCache, getPQ :: PathHeap }
 type PathState = State PathVars
 
-vpos :: Path a => a -> Int
-vpos s = (y s) * yMax + (x s)
+vpos :: Location -> Int
+vpos s = y * yMax + x
+	where (x,y) = coord s
 
-computeShortestPath :: ReaderT PathEnv PathState EstimateCost
+computeShortestPath :: ReaderT PathEnv PathState EstimateCache
 computeShortestPath = do
-	env <- ask
-	ss  <- get
-	
-	let s0 = start env
-	let s0_prio = calcPrio s0 ss env
+	(PathEnv c goal start _) <- ask
+	(PathVars ec fc pq) <- get
 
-	return $ getEstimate ss
+	prio_start <- calcPrio start
+	let (top, prio_top) = getTop prio_start start pq
+	prio_top' <- calcPrio top
+	r_start <- r start
+	g_start <- g start
+
+	r_top <- r top
+	g_top <- g top
+
+	if prio_top < prio_start || r_start > g_start then
+		if prio_top < prio_top' then do
+			updateU top prio_top'
+			computeShortestPath
+		else if g_top > r_top then do
+			return ec
+		else undefined
+	else
+		undefined
 	where
-		calcPrio s ss env = evalState ( runReaderT (calcPriority s) env) ss
+		g = getG
+		r = getR
+		gs = setG
+		rs = setR
+		getTop prio_start start pq = maybe (start, prio_start) (\b -> (PSQ.key b, PSQ.prio b)) $ PSQ.findMin pq
 
-calcPriority :: Path a => a -> ReaderT PathEnv PathState Priority
-calcPriority s = do
-	(PathVars e f) <- get
-	let (g, rhs) = (e V.! vpos s, f V.! vpos s)
-	dK <- asks deltaK
-	s0 <- asks start
+
+updateU :: Location -> Priority -> ReaderT PathEnv PathState ()
+updateU s p = do
+	(PathVars ec fc pq) <- get
+	put (PathVars ec fc $ PSQ.update (\_ -> Just p) s pq)
+
+calcPrio :: Location -> ReaderT PathEnv PathState Priority
+calcPrio s = do
+	calcPrio <- asks calcPriority'
+	g_cost <- getG s
+	r_cost <- getR s
+	return ( calcPrio g_cost r_cost s )
 	
-	return $ Priority ( (min g rhs) + (h s0 s) + dK, min g rhs )
+getG :: Location -> ReaderT PathEnv PathState Cost
+getG s = do
+	(PathVars ec fc pq) <- get
+	return $ ec V.! (vpos s)
+	
+getR :: Location -> ReaderT PathEnv PathState Cost
+getR s = do
+	(PathVars ec fc pq) <- get
+	return $ fc V.! (vpos s)
 
-hook = evalState ( runReaderT computeShortestPath (PathEnv terrain (Goal 9 9) (Start 0 0) 0) ) pathvars
+setG :: Location -> Cost -> ReaderT PathEnv PathState ()
+setG s val = do
+	(PathVars ec fc pq) <- get
+	let ec' = ec V.// [(vpos s, val)]
+	put (PathVars ec' fc pq)
+
+setR :: Location -> Cost -> ReaderT PathEnv PathState ()
+setR s val = do
+	(PathVars ec fc pq) <- get
+	let fc' = fc V.// [(vpos s, val)]
+	put (PathVars ec fc' pq)
+
+calcPriority :: Location -> DeltaCost -> (Location -> Cost) -> Cost -> Cost -> Location -> Priority
+calcPriority start delta_cost heuristic estimate lookahead location =
+	Priority ( (min estimate lookahead) + (heuristic location) + delta_cost, min estimate lookahead )
+
+init goal start = evalState ( runReaderT computeShortestPath (PathEnv terrain goal start calcPrio) ) pathvars
 	where
 		terrain :: V.Vector Int
 		terrain = V.generate (xMax * yMax) (\i -> if mod i 3 == 0 || mod i 2 == 1 then 1 else 5)
@@ -123,8 +157,13 @@ hook = evalState ( runReaderT computeShortestPath (PathEnv terrain (Goal 9 9) (S
 
 		forward :: V.Vector Int
 		forward = V.replicate (xMax * yMax) costMax
+		
+		dK = 0
 
-		pathvars = PathVars estimate forward
+		calcPrio :: Cost -> Cost -> Location -> Priority
+		calcPrio = calcPriority start dK (h start)
+
+		pathvars = PathVars estimate forward $ PSQ.singleton goal (Priority (h goal start, 0))
 
 
 printVector :: V.Vector Cost -> IO ()
