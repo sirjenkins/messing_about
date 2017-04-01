@@ -56,6 +56,14 @@ coord (Goal x y) = (x,y)
 coord (Start x y) = (x,y)
 coord (Location x y) = (x,y)
 
+neighbors (Goal x y) = neighbors (Location x y)
+neighbors (Start x y) = neighbors (Location x y)
+neighbors (Location x y) = 
+	map (\(x,y) -> Location x y) . filter withinBounds $ map (\(dx,dy) -> (x+dx, y+dy)) neighborhood
+	where
+		withinBounds (x,y) = x >= 0 && x < xMax && y >= 0 && y < yMax
+		neighborhood = [(-1,-1),(-1,0),(-1,1),(0,-1),(0,1),(1,-1),(1,0),(1,1)]
+
 
 type Cost 			= Int
 type DeltaCost 		= Int
@@ -66,11 +74,12 @@ type ForwardCache 	= V.Vector Cost
 newtype Priority = Priority (Int, Int) deriving (Read, Show, Eq, Ord)
 type PathHeap = PSQ.PSQ Location Priority
 
-data PathEnv = PathEnv { terrain 	:: Terrain
+data Env = Env { terrain 	:: Terrain
 						, goal 		:: Location
 						, start 	:: Location
 						, calcPriority'  :: Cost -> Cost -> Location -> Priority }
 
+type PathEnv = ReaderT Env
 data PathVars = PathVars{ getEC :: EstimateCache, getFC :: ForwardCache, getPQ :: PathHeap }
 type PathState = State PathVars
 
@@ -78,76 +87,113 @@ vpos :: Location -> Int
 vpos s = y * yMax + x
 	where (x,y) = coord s
 
-computeShortestPath :: ReaderT PathEnv PathState EstimateCache
+computeShortestPath :: PathEnv PathState EstimateCache
 computeShortestPath = do
-	(PathEnv c goal start _) <- ask
-	(PathVars ec fc pq) <- get
+	start <- asks start
+	goal <- asks goal
 
-	prio_start <- calcPrio start
-	let (top, prio_top) = getTop prio_start start pq
-	prio_top' <- calcPrio top
-	r_start <- r start
-	g_start <- g start
+	prio_start 		<- calcPrio start
+	(top, prio_top) <- getTopU
+	prio_top' 		<- calcPrio top
+	r_start 		<- r start
+	g_start 		<- g start
 
 	r_top <- r top
 	g_top <- g top
 
 	if prio_top < prio_start || r_start > g_start then
 		if prio_top < prio_top' then do
-			updateU top prio_top'
+			updatePriority top prio_top'
 			computeShortestPath
 		else if g_top > r_top then do
-			return ec
+			gs top r_top
+			removeKey top
+			forM_ (neighbors top) $ (\s ->
+					if s /= goal then do
+						r_s <- r s
+						c_s <- c s
+						rs s . min r_s $ c_s + g_top
+					else return ()
+-- Need to update PQ for each neighbor
+				)
+			computeShortestPath
 		else undefined
 	else
 		undefined
 	where
-		g = getG
-		r = getR
-		gs = setG
-		rs = setR
-		getTop prio_start start pq = maybe (start, prio_start) (\b -> (PSQ.key b, PSQ.prio b)) $ PSQ.findMin pq
+		g = findGValue
+		r = findLookAheadValue
+		gs = setGValue
+		rs = setLookAheadValue
+		c = findMovementCost
 
 
-updateU :: Location -> Priority -> ReaderT PathEnv PathState ()
-updateU s p = do
+adjustForward :: Location -> Location -> PathEnv PathState Cost
+adjustForward u s = do
+	r_s <- findLookAheadValue s
+	c_s <- findMovementCost s
+	g_u <- findGValue u
+	return . min r_s $ c_s + g_u
+
+removeKey :: Location -> PathEnv PathState ()
+removeKey s = do
+	(PathVars ec fc pq) <- get
+	put . PathVars ec fc $ PSQ.delete s pq
+
+getTopU :: PathEnv PathState (Location, Priority)
+getTopU = do
+	start <- asks start
+	prio_start <- calcPrio start
+	pq <- gets getPQ
+	return $ case PSQ.findMin pq of
+		Nothing -> (start, prio_start)
+		Just b  -> (PSQ.key b, PSQ.prio b)
+
+updatePriority :: Location -> Priority -> PathEnv PathState ()
+updatePriority s p = do
 	(PathVars ec fc pq) <- get
 	put (PathVars ec fc $ PSQ.update (\_ -> Just p) s pq)
 
-calcPrio :: Location -> ReaderT PathEnv PathState Priority
-calcPrio s = do
-	calcPrio <- asks calcPriority'
-	g_cost <- getG s
-	r_cost <- getR s
-	return ( calcPrio g_cost r_cost s )
 	
-getG :: Location -> ReaderT PathEnv PathState Cost
-getG s = do
-	(PathVars ec fc pq) <- get
+findMovementCost :: Location -> PathEnv PathState Cost
+findMovementCost s = do
+	costs <- asks terrain
+	return $ costs V.! (vpos s)
+
+findGValue :: Location -> PathEnv PathState Cost
+findGValue s = do
+	ec <- gets getEC
 	return $ ec V.! (vpos s)
 	
-getR :: Location -> ReaderT PathEnv PathState Cost
-getR s = do
+findLookAheadValue :: Location -> PathEnv PathState Cost
+findLookAheadValue s = do
 	(PathVars ec fc pq) <- get
 	return $ fc V.! (vpos s)
 
-setG :: Location -> Cost -> ReaderT PathEnv PathState ()
-setG s val = do
+setGValue :: Location -> Cost -> PathEnv PathState ()
+setGValue s val = do
 	(PathVars ec fc pq) <- get
 	let ec' = ec V.// [(vpos s, val)]
 	put (PathVars ec' fc pq)
 
-setR :: Location -> Cost -> ReaderT PathEnv PathState ()
-setR s val = do
+setLookAheadValue :: Location -> Cost -> PathEnv PathState ()
+setLookAheadValue s val = do
 	(PathVars ec fc pq) <- get
 	let fc' = fc V.// [(vpos s, val)]
 	put (PathVars ec fc' pq)
+
+calcPrio :: Location -> PathEnv PathState Priority
+calcPrio s = do
+	calcPrio <- asks calcPriority'
+	g_cost <- findGValue s
+	r_cost <- findLookAheadValue s
+	return ( calcPrio g_cost r_cost s )
 
 calcPriority :: Location -> DeltaCost -> (Location -> Cost) -> Cost -> Cost -> Location -> Priority
 calcPriority start delta_cost heuristic estimate lookahead location =
 	Priority ( (min estimate lookahead) + (heuristic location) + delta_cost, min estimate lookahead )
 
-init goal start = evalState ( runReaderT computeShortestPath (PathEnv terrain goal start calcPrio) ) pathvars
+init goal start = evalState ( runReaderT computeShortestPath (Env terrain goal start calcPrio) ) pathvars
 	where
 		terrain :: V.Vector Int
 		terrain = V.generate (xMax * yMax) (\i -> if mod i 3 == 0 || mod i 2 == 1 then 1 else 5)
