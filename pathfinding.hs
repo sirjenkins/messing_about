@@ -38,6 +38,7 @@
 -- 						rhs(s) = min s′∈Succ(s) (c(s,s′)+ g (s′));
 -- 				UpdateVertex (s);
 
+import Data.List (foldl')
 import qualified Data.Vector.Unboxed as V
 import qualified Data.PSQueue as PSQ
 import Control.Monad.State
@@ -47,10 +48,28 @@ xMax = 10 :: Int
 yMax = 10 :: Int
 costMax = 1000 :: Int
 
-data Location = Location Int Int | Goal Int Int | Start Int Int deriving (Read, Show, Eq, Ord)
+data Location = Location Int Int | Goal Int Int | Start Int Int deriving (Read, Show, Ord)
+instance Eq Location where
+	s == t = (destructure s) == (destructure t)
+		where
+			destructure u = case u of
+				(Goal x y) -> (x,y)
+				(Start x y) -> (x,y)
+				(Location x y) -> (x,y)
+
 
 h :: Location -> Location -> Int
-h a b = 0
+h a b = let
+	(ax, ay) = destructure a
+	(bx, by) = destructure b
+	in max (abs (ax - bx)) (abs (ay - by))
+	where
+		destructure s = case s of
+			(Goal x y) -> (x,y)
+			(Start x y) -> (x,y)
+			(Location x y) -> (x,y)
+
+
 coord :: Location -> (Int, Int)
 coord (Goal x y) = (x,y)
 coord (Start x y) = (x,y)
@@ -87,7 +106,7 @@ vpos :: Location -> Int
 vpos s = y * yMax + x
 	where (x,y) = coord s
 
-computeShortestPath :: PathEnv PathState EstimateCache
+computeShortestPath :: PathEnv PathState ()
 computeShortestPath = do
 	start <- asks start
 	goal <- asks goal
@@ -108,32 +127,47 @@ computeShortestPath = do
 		else if g_top > r_top then do
 			gs top r_top
 			removeKey top
-			forM_ (neighbors top) $ (\s ->
-					if s /= goal then do
-						r_s <- r s
-						c_s <- c s
-						rs s . min r_s $ c_s + g_top
-					else return ()
--- Need to update PQ for each neighbor
+			forM_ (filter (\x -> x /= goal) (neighbors top)) (\s -> do
+					r_s <- r s
+					c_s <- c s
+					rs s . min r_s $ c_s + g_top
 				)
+			forM_ (neighbors top) (\s -> updatePQ s)
 			computeShortestPath
-		else undefined
-	else
-		undefined
+		else do
+			gs top costMax
+			forM_ (filter (\x -> x /= goal) (top:(neighbors top))) (\s -> do
+				r_s <- r s
+				c_s <- c s
+				if r_s == c_s + g_top then do
+					r'_s <- foldl' minOfNeighbors (return costMax) $ (neighbors s)
+					rs s r'_s
+				else return ()
+				)
+			forM_ (top:(neighbors top)) (\s -> updatePQ s)
+			computeShortestPath
+	else return ()
 	where
-		g = findGValue
-		r = findLookAheadValue
-		gs = setGValue
-		rs = setLookAheadValue
-		c = findMovementCost
+		minOfNeighbors s s' = do
+			r_s <- s
+			g_s' <- g s'
+			c_s' <- c s'
+			return $ min r_s (g_s' + c_s')
 
+updatePQ :: Location -> PathEnv PathState ()
+updatePQ u = do
+	g_u <- g u
+	r_u <- r u
+	prio_u <- calcPrio u
+	if g_u /= r_u then
+		upsertPriority prio_u u
+	else
+		removeKey u
 
-adjustForward :: Location -> Location -> PathEnv PathState Cost
-adjustForward u s = do
-	r_s <- findLookAheadValue s
-	c_s <- findMovementCost s
-	g_u <- findGValue u
-	return . min r_s $ c_s + g_u
+upsertPriority :: Priority -> Location -> PathEnv PathState ()
+upsertPriority p s = do
+	(PathVars ec fc pq) <- get
+	put . PathVars ec fc $ PSQ.alter (\_ -> Just p) s pq
 
 removeKey :: Location -> PathEnv PathState ()
 removeKey s = do
@@ -159,28 +193,33 @@ findMovementCost :: Location -> PathEnv PathState Cost
 findMovementCost s = do
 	costs <- asks terrain
 	return $ costs V.! (vpos s)
+c = findMovementCost
 
 findGValue :: Location -> PathEnv PathState Cost
 findGValue s = do
 	ec <- gets getEC
 	return $ ec V.! (vpos s)
-	
+g = findGValue
+
 findLookAheadValue :: Location -> PathEnv PathState Cost
 findLookAheadValue s = do
 	(PathVars ec fc pq) <- get
 	return $ fc V.! (vpos s)
+r = findLookAheadValue
 
 setGValue :: Location -> Cost -> PathEnv PathState ()
 setGValue s val = do
 	(PathVars ec fc pq) <- get
 	let ec' = ec V.// [(vpos s, val)]
 	put (PathVars ec' fc pq)
+gs = setGValue
 
 setLookAheadValue :: Location -> Cost -> PathEnv PathState ()
 setLookAheadValue s val = do
 	(PathVars ec fc pq) <- get
 	let fc' = fc V.// [(vpos s, val)]
 	put (PathVars ec fc' pq)
+rs = setLookAheadValue
 
 calcPrio :: Location -> PathEnv PathState Priority
 calcPrio s = do
