@@ -37,6 +37,32 @@
 -- 					if (s ≠ s goal)
 -- 						rhs(s) = min s′∈Succ(s) (c(s,s′)+ g (s′));
 -- 				UpdateVertex (s);
+--
+-- procedure Main ()
+-- 	s₊ = s₀ ;
+-- 	Initialize () ;
+-- 	ComputeShortestPath () ;
+-- 	while ( s₀ ≠ s goal)
+-- 	/* if ( g ( s₀)= ∞) then there is no known path */
+-- 	s₀ = argmin s ∈ Succ(s₀) (c(s₀ ,s′) + g(s′)) ;
+-- 	Move to s₀ ;
+-- 	Scan graph for changed edge costs;
+-- 	if any edge costs changed
+-- 		k m = k m + h(s₊ ,s₀);
+-- 		s₊ = s₀;
+-- 		for all directed edges (u,v) with changed edge costs
+-- 			c old = c(u,v) ;
+-- 			Update the edge costc ( u,v) ;
+-- 			if (c old > c( u,v))
+-- 				if ( u ≠ s goal)
+-- 					rhs(u) = min(rhs(u), c(u,v) + g(v)) ;
+-- 			else if (rhs(u)= c old + g(v))
+-- 				if (u ≠ s goal)
+-- 					rhs(u) = min s′∈Succ(u) (c(u,s′)+ g(s′)) ;
+-- 			UpdateVertex (u) ;
+-- 		ComputeShortestPath() ;
+
+--module PathFinding () where
 
 import Data.List (foldl')
 import qualified Data.Vector.Unboxed as V
@@ -75,9 +101,13 @@ coord (Goal x y) = (x,y)
 coord (Start x y) = (x,y)
 coord (Location x y) = (x,y)
 
+vpos :: Location -> Int
+vpos s = y * yMax + x
+	where (x,y) = coord s
+
 neighbors (Goal x y) = neighbors (Location x y)
 neighbors (Start x y) = neighbors (Location x y)
-neighbors (Location x y) = 
+neighbors (Location x y) =
 	map (\(x,y) -> Location x y) . filter withinBounds $ map (\(dx,dy) -> (x+dx, y+dy)) neighborhood
 	where
 		withinBounds (x,y) = x >= 0 && x < xMax && y >= 0 && y < yMax
@@ -102,11 +132,39 @@ type PathEnv = ReaderT Env
 data PathVars = PathVars{ getEC :: EstimateCache, getFC :: ForwardCache, getPQ :: PathHeap }
 type PathState = State PathVars
 
-vpos :: Location -> Int
-vpos s = y * yMax + x
-	where (x,y) = coord s
+test = do
+	let (ec,t) = findPath (Goal 9 9) (Start 1 1)
+	printVector t
+	putStrLn "-------------------"
+	printVector ec
 
-computeShortestPath :: PathEnv PathState ()
+printVector :: V.Vector Cost -> IO ()
+printVector vector = let
+	loop v cnt
+		| cnt >= yMax = return ()
+		| otherwise = putStrLn (show row) >> loop vec (cnt + 1)
+		where (row, vec) = V.splitAt yMax v
+	in loop vector 1
+
+findPath goal start = (evalState ( runReaderT computeShortestPath (Env terrain goal start calcPrio) ) pathvars, terrain)
+	where
+		terrain :: V.Vector Int
+		terrain = V.generate (xMax * yMax) (\i -> if mod i 3 == 0 || mod i 2 == 1 then 1 else 5)
+
+		estimate :: V.Vector Int
+		estimate = V.replicate (xMax * yMax) costMax
+
+		forward :: V.Vector Int
+		forward = V.replicate (xMax * yMax) costMax V.// [(vpos goal, 0)]
+		
+		dK = 0
+
+		calcPrio :: Cost -> Cost -> Location -> Priority
+		calcPrio = calcPriority start dK h
+
+		pathvars = PathVars estimate forward $ PSQ.singleton goal (Priority (h goal start, 0))
+
+computeShortestPath :: PathEnv PathState EstimateCache
 computeShortestPath = do
 	start <- asks start
 	goal <- asks goal
@@ -126,11 +184,12 @@ computeShortestPath = do
 			computeShortestPath
 		else if g_top > r_top then do
 			gs top r_top
+			g_top' <- g top
 			removeKey top
 			forM_ (filter (\x -> x /= goal) (neighbors top)) (\s -> do
 					r_s <- r s
 					c_s <- c s
-					rs s . min r_s $ c_s + g_top
+					rs s . min r_s $ c_s + g_top'
 				)
 			forM_ (neighbors top) (\s -> updatePQ s)
 			computeShortestPath
@@ -146,7 +205,7 @@ computeShortestPath = do
 				)
 			forM_ (top:(neighbors top)) (\s -> updatePQ s)
 			computeShortestPath
-	else return ()
+	else gets getEC >>= (\ec -> return ec)
 	where
 		minOfNeighbors s s' = do
 			r_s <- s
@@ -167,6 +226,7 @@ updatePQ u = do
 upsertPriority :: Priority -> Location -> PathEnv PathState ()
 upsertPriority p s = do
 	(PathVars ec fc pq) <- get
+	let x = ec
 	put . PathVars ec fc $ PSQ.alter (\_ -> Just p) s pq
 
 removeKey :: Location -> PathEnv PathState ()
@@ -223,64 +283,15 @@ rs = setLookAheadValue
 
 calcPrio :: Location -> PathEnv PathState Priority
 calcPrio s = do
-	calcPrio <- asks calcPriority'
+	cP <- asks calcPriority'
 	g_cost <- findGValue s
 	r_cost <- findLookAheadValue s
-	return ( calcPrio g_cost r_cost s )
+	return ( cP g_cost r_cost s )
 
-calcPriority :: Location -> DeltaCost -> (Location -> Cost) -> Cost -> Cost -> Location -> Priority
+calcPriority :: Location -> DeltaCost -> (Location -> Location -> Cost) -> Cost -> Cost -> Location -> Priority
 calcPriority start delta_cost heuristic estimate lookahead location =
-	Priority ( (min estimate lookahead) + (heuristic location) + delta_cost, min estimate lookahead )
-
-init goal start = evalState ( runReaderT computeShortestPath (Env terrain goal start calcPrio) ) pathvars
-	where
-		terrain :: V.Vector Int
-		terrain = V.generate (xMax * yMax) (\i -> if mod i 3 == 0 || mod i 2 == 1 then 1 else 5)
-
-		estimate :: V.Vector Int
-		estimate = V.replicate (xMax * yMax) costMax
-
-		forward :: V.Vector Int
-		forward = V.replicate (xMax * yMax) costMax
-		
-		dK = 0
-
-		calcPrio :: Cost -> Cost -> Location -> Priority
-		calcPrio = calcPriority start dK (h start)
-
-		pathvars = PathVars estimate forward $ PSQ.singleton goal (Priority (h goal start, 0))
+	Priority ( (min estimate lookahead) + (heuristic start location) + delta_cost, min estimate lookahead )
 
 
-printVector :: V.Vector Cost -> IO ()
-printVector vector = let
-	loop v cnt
-		| cnt >= yMax = return ()
-		| otherwise = putStrLn (show row) >> loop vec (cnt + 1)
-		where (row, vec) = V.splitAt yMax v
-	in loop vector 1
-
--- procedure Main ()
--- 	s₊ = s₀ ;
--- 	Initialize () ;
--- 	ComputeShortestPath () ;
--- 	while ( s₀ ≠ s goal)
--- 	/* if ( g ( s₀)= ∞) then there is no known path */
--- 	s₀ = argmin s ∈ Succ(s₀) (c(s₀ ,s′) + g(s′)) ;
--- 	Move to s₀ ;
--- 	Scan graph for changed edge costs;
--- 	if any edge costs changed
--- 		k m = k m + h(s₊ ,s₀);
--- 		s₊ = s₀;
--- 		for all directed edges (u,v) with changed edge costs
--- 			c old = c(u,v) ;
--- 			Update the edge costc ( u,v) ;
--- 			if (c old > c( u,v))
--- 				if ( u ≠ s goal)
--- 					rhs(u) = min(rhs(u), c(u,v) + g(v)) ;
--- 			else if (rhs(u)= c old + g(v))
--- 				if (u ≠ s goal)
--- 					rhs(u) = min s′∈Succ(u) (c(u,s′)+ g(s′)) ;
--- 			UpdateVertex (u) ;
--- 		ComputeShortestPath() ;
 
 
