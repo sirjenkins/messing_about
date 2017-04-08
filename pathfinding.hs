@@ -70,9 +70,9 @@ import qualified Data.PSQueue as PSQ
 import Control.Monad.State
 import Control.Monad.Reader
 
-xMax = 100 :: Int
-yMax = 100 :: Int
-costMax = 10000000 :: Int
+xMax = 10 :: Int
+yMax = 10 :: Int
+costMax = 1000 :: Int
 
 data Location = Location Int Int | Goal Int Int | Start Int Int deriving (Read, Show, Ord)
 instance Eq Location where
@@ -133,7 +133,7 @@ data PathVars = PathVars{ getEC :: EstimateCache, getFC :: ForwardCache, getPQ :
 type PathState = State PathVars
 
 test = do
-	let (ec,t) = findPath (Goal 99 99) (Start 0 0)
+	let (ec,t) = findPath (Goal 9 9) (Start 0 0)
 	printVector False t
 	putStrLn "-----------------------------------"
 	printVector True ec
@@ -143,7 +143,7 @@ printVector bool vector = putStrLn . concat $ V.ifoldr' print [] vector
 	where
 		print i x str = if i == 0
 			then ["_"] ++ ( map (\i -> "_"++(show i)++"_") . take xMax $ iterate (\i -> i+1) 0) ++ ["\n\n"] ++ [(show (quot i yMax)) ++ " "] ++ (p i x)
-			else if (rem i yMax) == 10000 then [(show (quot i yMax)) ++ " "] ++ (p i x)
+			else if (rem i yMax) == 0 then [(show (quot i yMax)) ++ " "] ++ (p i x)
 			else p i x
 
 			where p i x = if (rem (i+1) xMax) == 0 then (symbol x):"\n":str else (symbol x):str
@@ -155,20 +155,20 @@ printVector bool vector = putStrLn . concat $ V.ifoldr' print [] vector
 
 terrain1and5 :: Terrain
 terrain1and5 = V.generate (xMax * yMax) (\i -> if mod i 3 == 0 || mod i 2 == 1 then 1 else 5)
-terrainNoPathCorner = V.generate (xMax * yMax) (\i -> if i == 88 || i == 98 || i == 89 then costMax else 5)
-terrainNoPathWall = V.generate (xMax * yMax) (\i -> if i >= 70 && i < 80 then costMax else 5)
-
-terrain138 :: Terrain
-terrain138 = V.generate (xMax * yMax) (\i -> if rem i 3 == 0 || rem i 2 == 1 || rem i 5 == 0 then 1 else 8)
-terrain325 :: Terrain
-terrain325 = V.generate (xMax * yMax) (\i -> if rem i 3 == 0 || rem i 2 == 1 || rem i 5 > 4 then 8 else 1)
-
-terrain4 :: Terrain
-terrain4 = V.generate (xMax * yMax) (\i -> if rem i 4 <= 1 then 1 else 8)
+--terrainNoPathCorner = V.generate (xMax * yMax) (\i -> if i == 88 || i == 98 || i == 89 then costMax else 5)
+--terrainNoPathWall = V.generate (xMax * yMax) (\i -> if i >= 70 && i < 80 then costMax else 5)
+--
+--terrain138 :: Terrain
+--terrain138 = V.generate (xMax * yMax) (\i -> if rem i 3 == 0 || rem i 2 == 1 || rem i 5 == 0 then 1 else 8)
+--terrain325 :: Terrain
+--terrain325 = V.generate (xMax * yMax) (\i -> if rem i 3 == 0 || rem i 2 == 1 || rem i 5 > 4 then 8 else 1)
+--
+--terrain4 :: Terrain
+--terrain4 = V.generate (xMax * yMax) (\i -> if rem i 4 <= 1 then 1 else 8)
 
 findPath goal start = (evalState ( runReaderT computeShortestPath (Env terrain goal start calcPrio) ) pathvars, terrain)
 	where
-		terrain = terrain4
+		terrain = terrain1and5
 		estimate :: V.Vector Int
 		estimate = V.replicate (xMax * yMax) costMax
 
@@ -312,4 +312,4 @@ calcPriority start delta_cost heuristic estimate lookahead location =
 
 
 
-
+--main = test
