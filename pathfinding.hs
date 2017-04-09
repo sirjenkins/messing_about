@@ -66,13 +66,15 @@
 
 import Data.List (foldl')
 import qualified Data.Vector.Unboxed as V
+import qualified Data.Vector.Unboxed.Mutable as MV
 import qualified Data.PSQueue as PSQ
 import Control.Monad.State
+import Control.Monad.ST
 import Control.Monad.Reader
 
-xMax = 10 :: Int
-yMax = 10 :: Int
-costMax = 1000 :: Int
+xMax = 100 :: Int
+yMax = 100 :: Int
+costMax = 1000000 :: Int
 
 data Location = Location Int Int | Goal Int Int | Start Int Int deriving (Read, Show, Ord)
 instance Eq Location where
@@ -133,7 +135,7 @@ data PathVars = PathVars{ getEC :: EstimateCache, getFC :: ForwardCache, getPQ :
 type PathState = State PathVars
 
 test = do
-	let (ec,t) = findPath (Goal 9 9) (Start 0 0)
+	let (ec,t) = findPath (Goal 99 99) (Start 0 0)
 	printVector False t
 	putStrLn "-----------------------------------"
 	printVector True ec
@@ -288,16 +290,24 @@ r = findLookAheadValue
 setGValue :: Location -> Cost -> PathEnv PathState ()
 setGValue s val = do
 	(PathVars ec fc pq) <- get
-	let ec' = ec V.// [(vpos s, val)]
+--	let ec' = ec V.// [(vpos s, val)]
+	let ec' = mutableWrite (vpos s) val ec
 	put (PathVars ec' fc pq)
 gs = setGValue
+
 
 setLookAheadValue :: Location -> Cost -> PathEnv PathState ()
 setLookAheadValue s val = do
 	(PathVars ec fc pq) <- get
-	let fc' = fc V.// [(vpos s, val)]
+	let fc' = mutableWrite (vpos s) val fc
 	put (PathVars ec fc' pq)
 rs = setLookAheadValue
+
+
+mutableWrite i val v = runST (do
+		mv <- V.unsafeThaw v
+		MV.write mv i val
+		V.unsafeFreeze mv)
 
 calcPrio :: Location -> PathEnv PathState Priority
 calcPrio s = do
@@ -312,4 +322,4 @@ calcPriority start delta_cost heuristic estimate lookahead location =
 
 
 
---main = test
+main = test
