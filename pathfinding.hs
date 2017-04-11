@@ -64,56 +64,60 @@
 
 --module PathFinding () where
 
-import Data.List (foldl')
+{-# LANGUAGE DeriveGeneric #-}
+import GHC.Generics (Generic)
+import Data.Hashable
+
 import qualified Data.Vector.Unboxed as V
 import qualified Data.Vector.Unboxed.Mutable as MV
-import qualified Data.PSQueue as PSQ
+import qualified Data.HashPSQ as HSQ
+import Data.List (foldl')
+
 import Control.Monad.State
-import Control.Monad.ST
+import Control.Monad.ST (runST)
 import Control.Monad.Reader
 
-xMax = 100 :: Int
-yMax = 100 :: Int
+xGridSize = 100 :: Int
+yGridSize = 100 :: Int
+xMin = 0
+xMax = xGridSize - 1
+yMin = 0
+yMax = yGridSize - 1
+
 costMax = 1000000 :: Int
 
-data Location = Location Int Int | Goal Int Int | Start Int Int deriving (Read, Show, Ord)
-instance Eq Location where
-	s == t = (destructure s) == (destructure t)
-		where
-			destructure u = case u of
-				(Goal x y) -> (x,y)
-				(Start x y) -> (x,y)
-				(Location x y) -> (x,y)
+data Location = Location Int Int deriving (Read, Show, Eq, Ord, Generic)
+data Goal = Goal Int Int deriving (Read, Show, Eq, Ord, Generic)
+data Start = Start Int Int deriving (Read, Show, Eq, Ord, Generic)
+instance Hashable Location
+
+--instance Eq Location where
+--	s == t = (destructure s) == (destructure t)
+--		where
+--			destructure u = case u of
+--				(Goal x y) -> (x,y)
+--				(Start x y) -> (x,y)
+--				(Location x y) -> (x,y)
 
 
 h :: Location -> Location -> Int
-h a b = let
-	(ax, ay) = destructure a
-	(bx, by) = destructure b
-	in max (abs (ax - bx)) (abs (ay - by))
-	where
-		destructure s = case s of
-			(Goal x y) -> (x,y)
-			(Start x y) -> (x,y)
-			(Location x y) -> (x,y)
-
-
-coord :: Location -> (Int, Int)
-coord (Goal x y) = (x,y)
-coord (Start x y) = (x,y)
-coord (Location x y) = (x,y)
+h (Location ax ay) (Location bx by) = max (abs (ax - bx)) (abs (ay - by))
 
 vpos :: Location -> Int
-vpos s = y * yMax + x
-	where (x,y) = coord s
+vpos (Location x y) = y * yGridSize + x
 
-neighbors (Goal x y) = neighbors (Location x y)
-neighbors (Start x y) = neighbors (Location x y)
-neighbors (Location x y) =
-	map (\(x,y) -> Location x y) . filter withinBounds $ map (\(dx,dy) -> (x+dx, y+dy)) neighborhood
+neighbors s@(Location x y) = map (\(dx,dy) -> Location (x+dx) (y+dy)) $ neighborhood s
 	where
-		withinBounds (x,y) = x >= 0 && x < xMax && y >= 0 && y < yMax
-		neighborhood = [(-1,-1),(-1,0),(-1,1),(0,-1),(0,1),(1,-1),(1,0),(1,1)]
+		neighborhood (Location x y)
+			| xMin < x  && x < xMax  && yMin < y  && y < yMax  = [(-1,-1),(-1,0),(-1,1),(0,-1),(0,1),(1,-1),(1,0),(1,1)]
+			| xMin >= x && x < xMax  && yMin < y  && y < yMax  = [(0,-1),(0,1),(1,-1),(1,0),(1,1)]
+			| xMin < x  && x >= xMax && yMin < y  && y < yMax  = [(-1,-1),(-1,0),(-1,1),(0,-1),(0,1)]
+			| xMin < x  && x < xMax  && yMin >= y && y < yMax  = [(-1,0),(-1,1),(0,1),(1,0),(1,1)]
+			| xMin < x  && x < xMax  && yMin < y  && y >= yMax = [(-1,-1),(-1,0),(0,-1),(1,-1),(1,0)]
+			| xMin >= x && x < xMax  && yMin >= y && y < yMax  = [(0,1),(1,0),(1,1)]     -- NW corner
+			| xMin >= x && x < xMax  && yMin < y  && y >= yMax = [(0,-1),(1,-1),(1,0)]   -- SW corner
+			| xMin < x  && x >= xMax && yMin >= y && y < yMax  = [(-1,0),(-1,1),(0,1)]   -- NE corner
+			| xMin < x  && x >= xMax && yMin < y  && y >= yMax = [(-1,-1),(-1,0),(0,-1)] -- SE corner
 
 
 type Cost 			= Int
@@ -123,7 +127,7 @@ type EstimateCache 	= V.Vector Cost
 type ForwardCache 	= V.Vector Cost
 
 newtype Priority = Priority (Int, Int) deriving (Read, Show, Eq, Ord)
-type PathHeap = PSQ.PSQ Location Priority
+type PathHeap = HSQ.HashPSQ Location Priority Location
 
 data Env = Env { terrain 	:: Terrain
 						, goal 		:: Location
@@ -135,7 +139,7 @@ data PathVars = PathVars{ getEC :: EstimateCache, getFC :: ForwardCache, getPQ :
 type PathState = State PathVars
 
 test = do
-	let (ec,t) = findPath (Goal 99 99) (Start 0 0)
+	let (ec,t) = findPath (Goal 0 0) (Start 99 99)
 	printVector False t
 	putStrLn "-----------------------------------"
 	printVector True ec
@@ -144,11 +148,11 @@ printVector :: Bool -> V.Vector Cost -> IO ()
 printVector bool vector = putStrLn . concat $ V.ifoldr' print [] vector
 	where
 		print i x str = if i == 0
-			then ["_"] ++ ( map (\i -> "_"++(show i)++"_") . take xMax $ iterate (\i -> i+1) 0) ++ ["\n\n"] ++ [(show (quot i yMax)) ++ " "] ++ (p i x)
-			else if (rem i yMax) == 0 then [(show (quot i yMax)) ++ " "] ++ (p i x)
+			then ["_"] ++ ( map (\i -> "_"++(show i)++"_") . take xGridSize $ iterate (\i -> i+1) 0) ++ ["\n\n"] ++ [(show (quot i yGridSize)) ++ " "] ++ (p i x)
+			else if (rem i yGridSize) == 0 then [(show (quot i yGridSize)) ++ " "] ++ (p i x)
 			else p i x
 
-			where p i x = if (rem (i+1) xMax) == 0 then (symbol x):"\n":str else (symbol x):str
+			where p i x = if (rem (i+1) xGridSize) == 0 then (symbol x):"\n":str else (symbol x):str
 
 		symbol x = case compare x costMax of
 			EQ -> "∞"
@@ -156,33 +160,36 @@ printVector bool vector = putStrLn . concat $ V.ifoldr' print [] vector
 			LT -> if bool then "." else " " ++ (show (rem x 10)) ++ " "
 
 terrain1and5 :: Terrain
-terrain1and5 = V.generate (xMax * yMax) (\i -> if mod i 3 == 0 || mod i 2 == 1 then 1 else 5)
---terrainNoPathCorner = V.generate (xMax * yMax) (\i -> if i == 88 || i == 98 || i == 89 then costMax else 5)
---terrainNoPathWall = V.generate (xMax * yMax) (\i -> if i >= 70 && i < 80 then costMax else 5)
+terrain1and5 = V.generate (xGridSize * yGridSize) (\i -> if mod i 3 == 0 || mod i 2 == 1 then 1 else 5)
+--terrainNoPathCorner = V.generate (xGridSize * yGridSize) (\i -> if i == 88 || i == 98 || i == 89 then costMax else 5)
+--terrainNoPathWall = V.generate (xGridSize * yGridSize) (\i -> if i >= 70 && i < 80 then costMax else 5)
 --
 --terrain138 :: Terrain
---terrain138 = V.generate (xMax * yMax) (\i -> if rem i 3 == 0 || rem i 2 == 1 || rem i 5 == 0 then 1 else 8)
+--terrain138 = V.generate (xGridSize * yGridSize) (\i -> if rem i 3 == 0 || rem i 2 == 1 || rem i 5 == 0 then 1 else 8)
 --terrain325 :: Terrain
---terrain325 = V.generate (xMax * yMax) (\i -> if rem i 3 == 0 || rem i 2 == 1 || rem i 5 > 4 then 8 else 1)
+--terrain325 = V.generate (xGridSize * yGridSize) (\i -> if rem i 3 == 0 || rem i 2 == 1 || rem i 5 > 4 then 8 else 1)
 --
 --terrain4 :: Terrain
---terrain4 = V.generate (xMax * yMax) (\i -> if rem i 4 <= 1 then 1 else 8)
+--terrain4 = V.generate (xGridSize * yGridSize) (\i -> if rem i 4 <= 1 then 1 else 8)
 
-findPath goal start = (evalState ( runReaderT computeShortestPath (Env terrain goal start calcPrio) ) pathvars, terrain)
+findPath (Goal gx gy) (Start sx sy) = (evalState ( runReaderT computeShortestPath (Env terrain goal start calcPrio) ) pathvars, terrain)
 	where
+		goal = Location gx gy
+		start = Location sx sy
+
 		terrain = terrain1and5
 		estimate :: V.Vector Int
-		estimate = V.replicate (xMax * yMax) costMax
+		estimate = V.replicate (xGridSize * yGridSize) costMax
 
 		forward :: V.Vector Int
-		forward = V.replicate (xMax * yMax) costMax V.// [(vpos goal, 0)]
+		forward = V.replicate (xGridSize * yGridSize) costMax V.// [(vpos goal, 0)]
 		
 		dK = 0
 
 		calcPrio :: Cost -> Cost -> Location -> Priority
 		calcPrio = calcPriority start dK h
 
-		pathvars = PathVars estimate forward $ PSQ.singleton goal (Priority (h goal start, 0))
+		pathvars = PathVars estimate forward $ HSQ.singleton goal (Priority (h goal start, 0)) goal
 
 computeShortestPath :: PathEnv PathState EstimateCache
 computeShortestPath = do
@@ -247,26 +254,26 @@ upsertPriority :: Priority -> Location -> PathEnv PathState ()
 upsertPriority p s = do
 	(PathVars ec fc pq) <- get
 	let x = ec
-	put . PathVars ec fc $ PSQ.alter (\_ -> Just p) s pq
+	put . PathVars ec fc $ snd (HSQ.alter (\_ -> (0,Just (p, s))) s pq)
 
 removeKey :: Location -> PathEnv PathState ()
 removeKey s = do
 	(PathVars ec fc pq) <- get
-	put . PathVars ec fc $ PSQ.delete s pq
+	put . PathVars ec fc $ HSQ.delete s pq
 
 getTopU :: PathEnv PathState (Location, Priority)
 getTopU = do
 	start <- asks start
 	prio_start <- calcPrio start
 	pq <- gets getPQ
-	return $ case PSQ.findMin pq of
+	return $ case HSQ.findMin pq of
 		Nothing -> (start, prio_start)
-		Just b  -> (PSQ.key b, PSQ.prio b)
+		Just (k,p,v)  -> (k,p)
 
 updatePriority :: Location -> Priority -> PathEnv PathState ()
 updatePriority s p = do
 	(PathVars ec fc pq) <- get
-	put (PathVars ec fc $ PSQ.update (\_ -> Just p) s pq)
+	put (PathVars ec fc $ snd (HSQ.alter (\_ -> (0, Just (p, s))) s pq))
 
 	
 findMovementCost :: Location -> PathEnv PathState Cost
@@ -277,7 +284,7 @@ c = findMovementCost
 
 findGValue :: Location -> PathEnv PathState Cost
 findGValue s = do
-	ec <- gets getEC
+	(PathVars ec fc pq) <- get
 	return $ ec V.! (vpos s)
 g = findGValue
 
@@ -311,7 +318,7 @@ mutableWrite i val v = runST (do
 
 calcPrio :: Location -> PathEnv PathState Priority
 calcPrio s = do
-	cP <- asks calcPriority'
+	(Env c goal start cP) <- ask
 	g_cost <- findGValue s
 	r_cost <- findLookAheadValue s
 	return ( cP g_cost r_cost s )
