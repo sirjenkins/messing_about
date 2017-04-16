@@ -62,15 +62,15 @@
 -- 			UpdateVertex (u) ;
 -- 		ComputeShortestPath() ;
 
---module PathFinding () where
-
 {-# LANGUAGE DeriveGeneric #-}
+--module PathFinding (findPath) where
+
 import GHC.Generics (Generic)
 import Data.Hashable
 
 import qualified Data.Vector.Unboxed as V
 import qualified Data.Vector.Unboxed.Mutable as MV
-import qualified Data.HashPSQ as HSQ
+import qualified Data.IntPSQ as ISQ
 import Data.List (foldl')
 
 import Control.Monad.State
@@ -118,13 +118,12 @@ type EstimateCache 	= V.Vector Cost
 type ForwardCache 	= V.Vector Cost
 
 newtype Priority = Priority (Int, Int) deriving (Read, Show, Eq, Ord)
-type PathHeap = HSQ.HashPSQ Location Priority Location
+type PathHeap = ISQ.IntPSQ Priority Location
 
 data Env = Env { terrain 	:: Terrain
-						, goal 		:: Location
-						, start 	:: Location
---						, calcPriority'  :: Cost -> Cost -> Location -> Priority }
-                        , dK :: Int}
+				, goal 		:: Location
+				, start 	:: Location
+				, dK :: Int}
 
 type PathEnv = ReaderT Env
 data PathVars = PathVars{ getEC :: EstimateCache, getFC :: ForwardCache, getPQ :: PathHeap }
@@ -181,12 +180,11 @@ findPath (Goal gx gy) (Start sx sy) = (evalState ( runReaderT computeShortestPat
 		
 		dK = 0
 
-		pathvars = PathVars estimate forward $ HSQ.singleton goal (Priority (h goal start, 0)) goal
+		pathvars = PathVars estimate forward $ ISQ.singleton (vpos goal) (Priority (h goal start, 0)) goal
 
 computeShortestPath :: PathEnv PathState EstimateCache
 computeShortestPath = do
-	start <- asks start
-	goal <- asks goal
+	(Env _ goal start _) <- ask
 
 	prio_start 		<- calcPrio start
 	(top, prio_top) <- getTopU
@@ -246,26 +244,26 @@ upsertPriority :: Priority -> Location -> PathEnv PathState ()
 upsertPriority p s = do
 	(PathVars ec fc pq) <- get
 	let x = ec
-	put . PathVars ec fc $ snd (HSQ.alter (\_ -> (0, Just (p, s))) s pq)
+	put . PathVars ec fc $ snd (ISQ.alter (\_ -> (0, Just (p, s))) (vpos s) pq)
 
 removeKey :: Location -> PathEnv PathState ()
 removeKey s = do
 	(PathVars ec fc pq) <- get
-	put . PathVars ec fc $ HSQ.delete s pq
+	put . PathVars ec fc $ ISQ.delete (vpos s) pq
 
 getTopU :: PathEnv PathState (Location, Priority)
 getTopU = do
 	start <- asks start
 	prio_start <- calcPrio start
 	pq <- gets getPQ
-	return $ case HSQ.findMin pq of
+	return $ case ISQ.findMin pq of
 		Nothing -> (start, prio_start)
-		Just (k,p,v)  -> (k,p)
+		Just (k,p,v)  -> (v,p)
 
 updatePriority :: Location -> Priority -> PathEnv PathState ()
 updatePriority s p = do
 	(PathVars ec fc pq) <- get
-	put (PathVars ec fc $ snd (HSQ.alter (\_ -> (0, Just (p, s))) s pq))
+	put (PathVars ec fc $ snd (ISQ.alter (\_ -> (0, Just (p, s))) (vpos s) pq))
 
 	
 findMovementCost :: Location -> PathEnv PathState Cost
@@ -276,14 +274,14 @@ c = findMovementCost
 
 findGValue :: Location -> PathEnv PathState Cost
 findGValue s = do
-	(PathVars ec fc pq) <- get
-	return $ ec V.! (s `seq` vpos s)
+	(PathVars ec _ _) <- get
+	return $ ec `V.unsafeIndex` (s `seq` vpos s)
 g = findGValue
 
 findLookAheadValue :: Location -> PathEnv PathState Cost
 findLookAheadValue s = do
-	(PathVars ec fc pq) <- get
-	return $ fc V.! (s `seq` vpos s)
+	(PathVars _ fc _) <- get
+	return $ fc `V.unsafeIndex` (s `seq` vpos s)
 r = findLookAheadValue
 
 setGValue :: Location -> Cost -> PathEnv PathState ()
