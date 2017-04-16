@@ -91,28 +91,19 @@ data Goal = Goal Int Int deriving (Read, Show, Eq, Ord, Generic)
 data Start = Start Int Int deriving (Read, Show, Eq, Ord, Generic)
 instance Hashable Location
 
---instance Eq Location where
---	s == t = (destructure s) == (destructure t)
---		where
---			destructure u = case u of
---				(Goal x y) -> (x,y)
---				(Start x y) -> (x,y)
---				(Location x y) -> (x,y)
-
-
 h :: Location -> Location -> Int
 h (Location ax ay) (Location bx by) = max (abs (ax - bx)) (abs (ay - by))
 
 vpos :: Location -> Int
 vpos (Location x y) = y * yGridSize + x
 
-neighbors s@(Location x y) = map (\(dx,dy) -> Location (x+dx) (y+dy)) $ neighborhood s
+neighbors (Location x y) = map (\(dx,dy) -> Location (x+dx) (y+dy)) $ neighborhood x y
 	where
-		neighborhood (Location x y)
-			| xMin < x  && x < xMax  && yMin < y  && y < yMax  = [(-1,-1),(-1,0),(-1,1),(0,-1),(0,1),(1,-1),(1,0),(1,1)]
-			| xMin >= x && x < xMax  && yMin < y  && y < yMax  = [(0,-1),(0,1),(1,-1),(1,0),(1,1)]
+		neighborhood x y
+			| xMin < x  && x < xMax  && yMin < y  && y < yMax  = [(-1,0),(1,0),(-1,-1),(-1,1),(0,-1),(0,1),(1,-1),(1,1)]
+			| xMin >= x && x < xMax  && yMin < y  && y < yMax  = [(1,0),(0,-1),(0,1),(1,-1),(1,1)]
 			| xMin < x  && x >= xMax && yMin < y  && y < yMax  = [(-1,-1),(-1,0),(-1,1),(0,-1),(0,1)]
-			| xMin < x  && x < xMax  && yMin >= y && y < yMax  = [(-1,0),(-1,1),(0,1),(1,0),(1,1)]
+			| xMin < x  && x < xMax  && yMin >= y && y < yMax  = [(-1,0),(0,1),(1,0),(-1,1),(1,1)]
 			| xMin < x  && x < xMax  && yMin < y  && y >= yMax = [(-1,-1),(-1,0),(0,-1),(1,-1),(1,0)]
 			| xMin >= x && x < xMax  && yMin >= y && y < yMax  = [(0,1),(1,0),(1,1)]     -- NW corner
 			| xMin >= x && x < xMax  && yMin < y  && y >= yMax = [(0,-1),(1,-1),(1,0)]   -- SW corner
@@ -132,16 +123,17 @@ type PathHeap = HSQ.HashPSQ Location Priority Location
 data Env = Env { terrain 	:: Terrain
 						, goal 		:: Location
 						, start 	:: Location
-						, calcPriority'  :: Cost -> Cost -> Location -> Priority }
+--						, calcPriority'  :: Cost -> Cost -> Location -> Priority }
+                        , dK :: Int}
 
 type PathEnv = ReaderT Env
 data PathVars = PathVars{ getEC :: EstimateCache, getFC :: ForwardCache, getPQ :: PathHeap }
 type PathState = State PathVars
 
 test = do
-	let (ec,t) = findPath (Goal 0 0) (Start 99 99)
-	printVector False t
-	putStrLn "-----------------------------------"
+	let (ec,t) = findPath (Goal 0 50) (Start 99 50)
+--	printVector False t
+--	putStrLn "-----------------------------------"
 	printVector True ec
 
 printVector :: Bool -> V.Vector Cost -> IO ()
@@ -159,6 +151,9 @@ printVector bool vector = putStrLn . concat $ V.ifoldr' print [] vector
 			GT -> "*"
 			LT -> if bool then "." else " " ++ (show (rem x 10)) ++ " "
 
+terrain1 :: Terrain
+terrain1 = V.generate (xGridSize * yGridSize) (\_ -> 1)
+
 terrain1and5 :: Terrain
 terrain1and5 = V.generate (xGridSize * yGridSize) (\i -> if mod i 3 == 0 || mod i 2 == 1 then 1 else 5)
 --terrainNoPathCorner = V.generate (xGridSize * yGridSize) (\i -> if i == 88 || i == 98 || i == 89 then costMax else 5)
@@ -172,12 +167,12 @@ terrain1and5 = V.generate (xGridSize * yGridSize) (\i -> if mod i 3 == 0 || mod 
 --terrain4 :: Terrain
 --terrain4 = V.generate (xGridSize * yGridSize) (\i -> if rem i 4 <= 1 then 1 else 8)
 
-findPath (Goal gx gy) (Start sx sy) = (evalState ( runReaderT computeShortestPath (Env terrain goal start calcPrio) ) pathvars, terrain)
+findPath (Goal gx gy) (Start sx sy) = (evalState ( runReaderT computeShortestPath (Env terrain goal start dK) ) pathvars, terrain)
 	where
 		goal = Location gx gy
 		start = Location sx sy
 
-		terrain = terrain1and5
+		terrain = terrain1
 		estimate :: V.Vector Int
 		estimate = V.replicate (xGridSize * yGridSize) costMax
 
@@ -185,9 +180,6 @@ findPath (Goal gx gy) (Start sx sy) = (evalState ( runReaderT computeShortestPat
 		forward = V.replicate (xGridSize * yGridSize) costMax V.// [(vpos goal, 0)]
 		
 		dK = 0
-
-		calcPrio :: Cost -> Cost -> Location -> Priority
-		calcPrio = calcPriority start dK h
 
 		pathvars = PathVars estimate forward $ HSQ.singleton goal (Priority (h goal start, 0)) goal
 
@@ -254,7 +246,7 @@ upsertPriority :: Priority -> Location -> PathEnv PathState ()
 upsertPriority p s = do
 	(PathVars ec fc pq) <- get
 	let x = ec
-	put . PathVars ec fc $ snd (HSQ.alter (\_ -> (0,Just (p, s))) s pq)
+	put . PathVars ec fc $ snd (HSQ.alter (\_ -> (0, Just (p, s))) s pq)
 
 removeKey :: Location -> PathEnv PathState ()
 removeKey s = do
@@ -278,26 +270,25 @@ updatePriority s p = do
 	
 findMovementCost :: Location -> PathEnv PathState Cost
 findMovementCost s = do
-	costs <- asks terrain
+	(Env costs _ _ _) <- ask
 	return $ costs V.! (vpos s)
 c = findMovementCost
 
 findGValue :: Location -> PathEnv PathState Cost
 findGValue s = do
 	(PathVars ec fc pq) <- get
-	return $ ec V.! (vpos s)
+	return $ ec V.! (s `seq` vpos s)
 g = findGValue
 
 findLookAheadValue :: Location -> PathEnv PathState Cost
 findLookAheadValue s = do
 	(PathVars ec fc pq) <- get
-	return $ fc V.! (vpos s)
+	return $ fc V.! (s `seq` vpos s)
 r = findLookAheadValue
 
 setGValue :: Location -> Cost -> PathEnv PathState ()
 setGValue s val = do
 	(PathVars ec fc pq) <- get
---	let ec' = ec V.// [(vpos s, val)]
 	let ec' = mutableWrite (vpos s) val ec
 	put (PathVars ec' fc pq)
 gs = setGValue
@@ -318,14 +309,15 @@ mutableWrite i val v = runST (do
 
 calcPrio :: Location -> PathEnv PathState Priority
 calcPrio s = do
-	(Env c goal start cP) <- ask
+	(Env c goal start dK) <- ask
 	g_cost <- findGValue s
 	r_cost <- findLookAheadValue s
-	return ( cP g_cost r_cost s )
+	return ( calcPriority start dK g_cost r_cost s )
 
-calcPriority :: Location -> DeltaCost -> (Location -> Location -> Cost) -> Cost -> Cost -> Location -> Priority
-calcPriority start delta_cost heuristic estimate lookahead location =
-	Priority ( (min estimate lookahead) + (heuristic start location) + delta_cost, min estimate lookahead )
+calcPriority :: Location -> DeltaCost -> Cost -> Cost -> Location -> Priority
+calcPriority start delta_cost estimate lookahead location =
+	Priority ( m + (h start location) + delta_cost, m)
+    where m = estimate `seq` lookahead `seq` (min estimate lookahead)
 
 
 
