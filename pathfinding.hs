@@ -86,29 +86,29 @@ yMax = yGridSize - 1
 
 costMax = 1000000 :: Int
 
-data Location = Location Int Int deriving (Read, Show, Eq, Ord, Generic)
+data Location = Location Int Int Int deriving (Read, Show, Eq, Ord, Generic)
 data Goal = Goal Int Int deriving (Read, Show, Eq, Ord, Generic)
 data Start = Start Int Int deriving (Read, Show, Eq, Ord, Generic)
 instance Hashable Location
 
 h :: Location -> Location -> Int
-h (Location ax ay) (Location bx by) = max (abs (ax - bx)) (abs (ay - by))
+h (Location ax ay _) (Location bx by _) = max (abs (ax - bx)) (abs (ay - by))
 
 vpos :: Location -> Int
-vpos (Location x y) = y * yGridSize + x
+vpos (Location x y _) = y * yGridSize + x
 
-neighbors (Location x y) = map (\(dx,dy) -> Location (x+dx) (y+dy)) $ neighborhood x y
+neighbors (Location x y _) = map (\(dx,dy) -> Location dx dy (dy * yGridSize + dx)) $ neighborhood x y
 	where
 		neighborhood x y
-			| xMin < x  && x < xMax  && yMin < y  && y < yMax  = [(-1,0),(1,0),(-1,-1),(-1,1),(0,-1),(0,1),(1,-1),(1,1)]
-			| xMin >= x && x < xMax  && yMin < y  && y < yMax  = [(1,0),(0,-1),(0,1),(1,-1),(1,1)]
-			| xMin < x  && x >= xMax && yMin < y  && y < yMax  = [(-1,-1),(-1,0),(-1,1),(0,-1),(0,1)]
-			| xMin < x  && x < xMax  && yMin >= y && y < yMax  = [(-1,0),(0,1),(1,0),(-1,1),(1,1)]
-			| xMin < x  && x < xMax  && yMin < y  && y >= yMax = [(-1,-1),(-1,0),(0,-1),(1,-1),(1,0)]
-			| xMin >= x && x < xMax  && yMin >= y && y < yMax  = [(0,1),(1,0),(1,1)]     -- NW corner
-			| xMin >= x && x < xMax  && yMin < y  && y >= yMax = [(0,-1),(1,-1),(1,0)]   -- SW corner
-			| xMin < x  && x >= xMax && yMin >= y && y < yMax  = [(-1,0),(-1,1),(0,1)]   -- NE corner
-			| xMin < x  && x >= xMax && yMin < y  && y >= yMax = [(-1,-1),(-1,0),(0,-1)] -- SE corner
+			| xMin < x  && x < xMax  && yMin < y  && y < yMax  = [(x-1,y),(x+1,y),(x-1,y-1),(x-1,y+1),(x,y-1),(x,y+1),(x+1,y-1),(x+1,y+1)]
+			| xMin >= x && x < xMax  && yMin < y  && y < yMax  = [(x+1,y),(x,y-1),(x,y+1),(x+1,y-1),(x+1,y+1)]
+			| xMin < x  && x >= xMax && yMin < y  && y < yMax  = [(x-1,y-1),(x-1,y),(x-1,y+1),(x,y-1),(x,y+1)]
+			| xMin < x  && x < xMax  && yMin >= y && y < yMax  = [(x-1,y),(x,y+1),(x+1,y),(x-1,y+1),(x+1,y+1)]
+			| xMin < x  && x < xMax  && yMin < y  && y >= yMax = [(x-1,y-1),(x-1,y),(x,y-1),(x+1,y-1),(x+1,y)]
+			| xMin >= x && x < xMax  && yMin >= y && y < yMax  = [(x,y+1),(x+1,y),(x+1,x+1)]     -- NW corner
+			| xMin >= x && x < xMax  && yMin < y  && y >= yMax = [(x,y-1),(x+1,y-1),(x+1,y)]   -- SW corner
+			| xMin < x  && x >= xMax && yMin >= y && y < yMax  = [(x-1,y),(x-1,y+1),(x,y+1)]   -- NE corner
+			| xMin < x  && x >= xMax && yMin < y  && y >= yMax = [(x-1,y-1),(x-1,y),(x,y-1)] -- SE corner
 
 
 type Cost 			= Int
@@ -168,19 +168,21 @@ terrain1and5 = V.generate (xGridSize * yGridSize) (\i -> if mod i 3 == 0 || mod 
 
 findPath (Goal gx gy) (Start sx sy) = (evalState ( runReaderT computeShortestPath (Env terrain goal start dK) ) pathvars, terrain)
 	where
-		goal = Location gx gy
-		start = Location sx sy
+		gpos = gy * yGridSize + gx
+		goal = Location gx gy gpos
+		spos = sy * yGridSize + sx
+		start = Location sx sy spos
 
 		terrain = terrain1
 		estimate :: V.Vector Int
 		estimate = V.replicate (xGridSize * yGridSize) costMax
 
 		forward :: V.Vector Int
-		forward = V.replicate (xGridSize * yGridSize) costMax V.// [(vpos goal, 0)]
+		forward = V.replicate (xGridSize * yGridSize) costMax V.// [(gpos, 0)]
 		
 		dK = 0
 
-		pathvars = PathVars estimate forward $ ISQ.singleton (vpos goal) (Priority (h goal start, 0)) goal
+		pathvars = PathVars estimate forward $ ISQ.singleton gpos (Priority (h goal start, 0)) goal
 
 computeShortestPath :: PathEnv PathState EstimateCache
 computeShortestPath = do
@@ -203,16 +205,18 @@ computeShortestPath = do
 			gs top r_top
 			g_top' <- g top
 			removeKey top
-			forM_ (filter (\x -> x /= goal) (neighbors top)) (\s -> do
+			let n = neighbors top
+			forM_ (filter (\x -> x /= goal) n) (\s -> do
 					r_s <- r s
 					c_s <- c s
 					rs s . min r_s $ c_s + g_top'
 				)
-			forM_ (neighbors top) (\s -> updatePQ s)
+			forM_ n (\s -> updatePQ s)
 			computeShortestPath
 		else do
 			gs top costMax
-			forM_ (filter (\x -> x /= goal) (top:(neighbors top))) (\s -> do
+			let n = neighbors top
+			forM_ (filter (\x -> x /= goal) (top:n)) (\s -> do
 				r_s <- r s
 				c_s <- c s
 				if r_s == c_s + g_top then do
@@ -220,7 +224,7 @@ computeShortestPath = do
 					rs s r'_s
 				else return ()
 				)
-			forM_ (top:(neighbors top)) (\s -> updatePQ s)
+			forM_ (top:n) (\s -> updatePQ s)
 			computeShortestPath
 	else gets getEC >>= (\ec -> return ec)
 	where
@@ -241,15 +245,14 @@ updatePQ u = do
 		removeKey u
 
 upsertPriority :: Priority -> Location -> PathEnv PathState ()
-upsertPriority p s = do
+upsertPriority p s@(Location x y pos) = do
 	(PathVars ec fc pq) <- get
-	let x = ec
-	put . PathVars ec fc $ snd (ISQ.alter (\_ -> (0, Just (p, s))) (vpos s) pq)
+	put . PathVars ec fc $ snd (ISQ.alter (\_ -> (p, Just (p, s))) pos pq)
 
 removeKey :: Location -> PathEnv PathState ()
-removeKey s = do
+removeKey (Location _ _ pos) = do
 	(PathVars ec fc pq) <- get
-	put . PathVars ec fc $ ISQ.delete (vpos s) pq
+	put . PathVars ec fc $ ISQ.delete pos pq
 
 getTopU :: PathEnv PathState (Location, Priority)
 getTopU = do
@@ -261,41 +264,41 @@ getTopU = do
 		Just (k,p,v)  -> (v,p)
 
 updatePriority :: Location -> Priority -> PathEnv PathState ()
-updatePriority s p = do
+updatePriority s@(Location x y pos) p = do
 	(PathVars ec fc pq) <- get
-	put (PathVars ec fc $ snd (ISQ.alter (\_ -> (0, Just (p, s))) (vpos s) pq))
+	put (PathVars ec fc $ snd (ISQ.alter (\_ -> (0, Just (p, s))) pos pq))
 
 	
 findMovementCost :: Location -> PathEnv PathState Cost
-findMovementCost s = do
+findMovementCost (Location _ _ pos) = do
 	(Env costs _ _ _) <- ask
-	return $ costs V.! (vpos s)
+	return $ costs V.! pos
 c = findMovementCost
 
 findGValue :: Location -> PathEnv PathState Cost
-findGValue s = do
+findGValue (Location _ _ pos) = do
 	(PathVars ec _ _) <- get
-	return $ ec `V.unsafeIndex` (s `seq` vpos s)
+	return $ ec `V.unsafeIndex` pos
 g = findGValue
 
 findLookAheadValue :: Location -> PathEnv PathState Cost
-findLookAheadValue s = do
+findLookAheadValue (Location _ _ pos) = do
 	(PathVars _ fc _) <- get
-	return $ fc `V.unsafeIndex` (s `seq` vpos s)
+	return $ fc `V.unsafeIndex` pos
 r = findLookAheadValue
 
 setGValue :: Location -> Cost -> PathEnv PathState ()
-setGValue s val = do
+setGValue s@(Location x y pos) val = do
 	(PathVars ec fc pq) <- get
-	let ec' = mutableWrite (vpos s) val ec
+	let ec' = mutableWrite pos val ec
 	put (PathVars ec' fc pq)
 gs = setGValue
 
 
 setLookAheadValue :: Location -> Cost -> PathEnv PathState ()
-setLookAheadValue s val = do
+setLookAheadValue s@(Location x y pos) val = do
 	(PathVars ec fc pq) <- get
-	let fc' = mutableWrite (vpos s) val fc
+	let fc' = mutableWrite pos val fc
 	put (PathVars ec fc' pq)
 rs = setLookAheadValue
 
@@ -310,7 +313,7 @@ calcPrio s = do
 	(Env c goal start dK) <- ask
 	g_cost <- findGValue s
 	r_cost <- findLookAheadValue s
-	return ( calcPriority start dK g_cost r_cost s )
+	return $ calcPriority start dK g_cost r_cost s
 
 calcPriority :: Location -> DeltaCost -> Cost -> Cost -> Location -> Priority
 calcPriority start delta_cost estimate lookahead location =
