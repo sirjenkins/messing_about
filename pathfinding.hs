@@ -95,8 +95,8 @@ instance Hashable Location
 h :: Location -> Location -> Int
 h (Location ax ay _) (Location bx by _) = max (abs (ax - bx)) (abs (ay - by))
 
-vpos :: Location -> Int
-vpos (Location x y _) = y * yGridSize + x
+vpos :: Int -> Int-> Int
+vpos x y = y * yGridSize + x
 
 neighbors (Location x y _) = map (\(dx,dy) -> Location dx dy (dy * yGridSize + dx)) $ neighborhood x y
 	where
@@ -130,11 +130,6 @@ type PathEnv = ReaderT Env
 data PathVars = PathVars{ getEC :: EstimateCache, getFC :: ForwardCache, getPQ :: PathHeap }
 type PathState = State PathVars
 
-test = do
-	let (ec,t) = findPath (Goal 0 50) (Start 99 50)
---	printVector False t
---	putStrLn "-----------------------------------"
-	printVector True ec
 
 printVector :: Bool -> V.Vector Cost -> IO ()
 printVector bool vector = putStrLn . concat $ V.ifoldr' print [] vector
@@ -166,14 +161,13 @@ terrain1and5 = V.generate (xGridSize * yGridSize) (\i -> if mod i 3 == 0 || mod 
 --terrain4 :: Terrain
 --terrain4 = V.generate (xGridSize * yGridSize) (\i -> if rem i 4 <= 1 then 1 else 8)
 
-findPath (Goal gx gy) (Start sx sy) = (evalState ( runReaderT computeShortestPath (Env terrain goal start dK) ) pathvars, terrain)
+initialize :: Goal -> Start -> Terrain -> (Env, PathVars)
+initialize (Goal gx gy) (Start sx sy) terrain = (pathenv, pathvars)
 	where
-		gpos = gy * yGridSize + gx
+		gpos = vpos gx gy
 		goal = Location gx gy gpos
-		spos = sy * yGridSize + sx
-		start = Location sx sy spos
+		start = Location sx sy $ vpos sx sy
 
-		terrain = terrain1
 		estimate :: V.Vector Int
 		estimate = V.replicate (xGridSize * yGridSize) costMax
 
@@ -182,7 +176,44 @@ findPath (Goal gx gy) (Start sx sy) = (evalState ( runReaderT computeShortestPat
 		
 		dK = 0
 
+		pathenv  = Env terrain goal start dK
 		pathvars = PathVars estimate forward $ ISQ.singleton gpos (Priority (h goal start, 0)) goal
+
+test = do
+	let ec = findPath (Goal 0 50) (Start 99 50) terrain
+--	printVector False t
+--	putStrLn "-----------------------------------"
+	printVector True ec
+	where 
+		terrain = terrain1
+
+-- procedure Main ()
+-- 	s₊ = s₀ ;
+-- 	Initialize () ;
+-- 	ComputeShortestPath () ;
+-- 	while ( s₀ ≠ s goal)
+-- 	/* if ( g ( s₀)= ∞) then there is no known path */
+-- 	s₀ = argmin s ∈ Succ(s₀) (c(s₀ ,s′) + g(s′)) ;
+-- 	Move to s₀ ;
+-- 	Scan graph for changed edge costs;
+-- 	if any edge costs changed
+-- 		k m = k m + h(s₊ ,s₀);
+-- 		s₊ = s₀;
+-- 		for all directed edges (u,v) with changed edge costs
+-- 			c old = c(u,v) ;
+-- 			Update the edge costc ( u,v) ;
+-- 			if (c old > c( u,v))
+-- 				if ( u ≠ s goal)
+-- 					rhs(u) = min(rhs(u), c(u,v) + g(v)) ;
+-- 			else if (rhs(u)= c old + g(v))
+-- 				if (u ≠ s goal)
+-- 					rhs(u) = min s′∈Succ(u) (c(u,s′)+ g(s′)) ;
+-- 			UpdateVertex (u) ;
+-- 		ComputeShortestPath() ;
+findPath :: Goal -> Start -> Terrain -> EstimateCache
+findPath goal start terrain = evalState ( runReaderT computeShortestPath pathenv ) pathvars
+	where
+		(pathenv, pathvars) = initialize goal start terrain
 
 computeShortestPath :: PathEnv PathState EstimateCache
 computeShortestPath = do
