@@ -73,6 +73,7 @@ import qualified Data.Vector.Unboxed.Mutable as MV
 import qualified Data.IntPSQ as ISQ
 import Data.List (foldl')
 
+import Control.Monad (when)
 import Control.Monad.State
 import Control.Monad.ST (runST)
 import Control.Monad.Reader
@@ -138,20 +139,19 @@ test = do
 printVector :: Bool -> V.Vector Cost -> IO ()
 printVector bool vector = putStrLn . concat $ V.ifoldr' print [] vector
 	where
-		print i x str = if i == 0
-			then ["_"] ++ ( map (\i -> "_"++(show i)++"_") . take xGridSize $ iterate (\i -> i+1) 0) ++ ["\n\n"] ++ [(show (quot i yGridSize)) ++ " "] ++ (p i x)
-			else if (rem i yGridSize) == 0 then [(show (quot i yGridSize)) ++ " "] ++ (p i x)
-			else p i x
-
-			where p i x = if (rem (i+1) xGridSize) == 0 then (symbol x):"\n":str else (symbol x):str
+		print i x str 
+			| i == 0 = ["_"] ++ ( map (\i -> "_"++ show i ++"_") . take xGridSize $ iterate (+1) 0) ++ ["\n\n"] ++ [show (quot i yGridSize) ++ " "] ++ p i x
+			| rem i yGridSize == 0 = [show (quot i yGridSize) ++ " "] ++ p i x
+			| otherwise = p i x
+			where p i x = if rem (i+1) xGridSize == 0 then symbol x :"\n":str else symbol x : str
 
 		symbol x = case compare x costMax of
 			EQ -> "∞"
 			GT -> "*"
-			LT -> if bool then "." else " " ++ (show (rem x 10)) ++ " "
+			LT -> if bool then "." else " " ++ show (rem x 10) ++ " "
 
 terrain1 :: Terrain
-terrain1 = V.generate (xGridSize * yGridSize) (\_ -> 1)
+terrain1 = V.generate (xGridSize * yGridSize) (const 1)
 
 terrain1and5 :: Terrain
 terrain1and5 = V.generate (xGridSize * yGridSize) (\i -> if mod i 3 == 0 || mod i 2 == 1 then 1 else 5)
@@ -206,27 +206,26 @@ computeShortestPath = do
 			g_top' <- g top
 			removeKey top
 			let n = neighbors top
-			forM_ (filter (\x -> x /= goal) n) (\s -> do
+			forM_ (filter (/= goal) n) (\s -> do
 					r_s <- r s
 					c_s <- c s
 					rs s . min r_s $ c_s + g_top'
 				)
-			forM_ n (\s -> updatePQ s)
+			forM_ n updatePQ
 			computeShortestPath
 		else do
 			gs top costMax
 			let n = neighbors top
-			forM_ (filter (\x -> x /= goal) (top:n)) (\s -> do
+			forM_ (filter (/= goal) (top:n)) (\s -> do
 				r_s <- r s
 				c_s <- c s
-				if r_s == c_s + g_top then do
-					r'_s <- foldl' minOfNeighbors (return costMax) $ (neighbors s)
+				when (r_s == c_s + g_top) $ do
+					r'_s <- foldl' minOfNeighbors (return costMax) (neighbors s)
 					rs s r'_s
-				else return ()
 				)
-			forM_ (top:n) (\s -> updatePQ s)
+			forM_ (top:n) updatePQ
 			computeShortestPath
-	else gets getEC >>= (\ec -> return ec)
+	else gets getEC
 	where
 		minOfNeighbors s s' = do
 			r_s <- s
@@ -247,7 +246,7 @@ updatePQ u = do
 upsertPriority :: Priority -> Location -> PathEnv PathState ()
 upsertPriority p s@(Location x y pos) = do
 	(PathVars ec fc pq) <- get
-	put . PathVars ec fc $ snd (ISQ.alter (\_ -> (p, Just (p, s))) pos pq)
+	put . PathVars ec fc $ snd (ISQ.alter (const (p, Just (p, s))) pos pq)
 
 removeKey :: Location -> PathEnv PathState ()
 removeKey (Location _ _ pos) = do
@@ -266,7 +265,7 @@ getTopU = do
 updatePriority :: Location -> Priority -> PathEnv PathState ()
 updatePriority s@(Location x y pos) p = do
 	(PathVars ec fc pq) <- get
-	put (PathVars ec fc $ snd (ISQ.alter (\_ -> (0, Just (p, s))) pos pq))
+	put (PathVars ec fc $ snd (ISQ.alter (const (0, Just (p, s))) pos pq))
 
 	
 findMovementCost :: Location -> PathEnv PathState Cost
@@ -317,8 +316,8 @@ calcPrio s = do
 
 calcPriority :: Location -> DeltaCost -> Cost -> Cost -> Location -> Priority
 calcPriority start delta_cost estimate lookahead location =
-	Priority ( m + (h start location) + delta_cost, m)
-    where m = estimate `seq` lookahead `seq` (min estimate lookahead)
+	Priority ( m + h start location + delta_cost, m)
+    where m = estimate `seq` lookahead `seq` min estimate lookahead
 
 
 
