@@ -73,7 +73,7 @@ import qualified Data.Vector.Unboxed.Mutable as MV
 import qualified Data.IntPSQ as ISQ
 import Data.List (foldl')
 
-import Control.Monad (when)
+import Control.Monad (when, foldM)
 import Control.Monad.State
 import Control.Monad.ST (runST)
 import Control.Monad.Reader
@@ -180,7 +180,7 @@ initialize (Goal gx gy) (Start sx sy) terrain = (pathenv, pathvars)
 		pathvars = PathVars estimate forward $ ISQ.singleton gpos (Priority (h goal start, 0)) goal
 
 test = do
-	let ec = findPath (Goal 0 50) (Start 99 50) terrain
+	let (PathVars ec fc pq) = findPath (Goal 0 50) (Start 99 50) terrain
 --	printVector False t
 --	putStrLn "-----------------------------------"
 	printVector True ec
@@ -210,10 +210,30 @@ test = do
 -- 					rhs(u) = min s′∈Succ(u) (c(u,s′)+ g(s′)) ;
 -- 			UpdateVertex (u) ;
 -- 		ComputeShortestPath() ;
-findPath :: Goal -> Start -> Terrain -> EstimateCache
-findPath goal start terrain = evalState ( runReaderT computeShortestPath pathenv ) pathvars
+findPath :: Goal -> Start -> Terrain -> PathVars
+findPath goal@(Goal gx gy) start@(Start sx sy) terrain 
+	| sx /= gx || sy /= gy = undefined
+	| otherwise = pathvars
 	where
+		computePathVars = execState ( runReaderT computeShortestPath pathenv ) pathvars
+		nextLocation = evalState ( runReaderT cheapestMove pathenv )
 		(pathenv, pathvars) = initialize goal start terrain
+
+cheapestMove :: PathEnv PathState (Maybe Location)
+cheapestMove = do
+	(Env _ _ start _) <- ask
+	g_start <- g start
+
+	case g_start >= costMax of 
+		True  -> return Nothing
+		False -> foldM minOfNeighbors start (neighbors start) >>= (return . Just)
+
+	where minOfNeighbors s s' = do
+		g_s  <- g s
+		c_s  <- c s
+		g_s' <- g s'
+		c_s' <- c s'
+		return $ if g_s + c_s <= g_s' + c_s' then s else s'
 
 computeShortestPath :: PathEnv PathState EstimateCache
 computeShortestPath = do
@@ -286,7 +306,7 @@ removeKey (Location _ _ pos) = do
 
 getTopU :: PathEnv PathState (Location, Priority)
 getTopU = do
-	start <- asks start
+	(Env _ _ start _) <- ask
 	prio_start <- calcPrio start
 	pq <- gets getPQ
 	return $ case ISQ.findMin pq of
