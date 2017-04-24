@@ -63,7 +63,7 @@
 --    ComputeShortestPath() ;
 
 {-# LANGUAGE DeriveGeneric #-}
---module PathFinding (findPath) where
+--module PathFinding (newPath, findPath, PathContext) where
 
 import GHC.Generics (Generic)
 import Data.Hashable
@@ -112,9 +112,9 @@ neighbors (Location x y _) = map (\(dx,dy) -> Location dx dy (dy * yGridSize + d
       | xMin < x  && x >= xMax && yMin < y  && y >= yMax = [(x-1,y-1),(x-1,y),(x,y-1)] -- SE corner
 
 
-type Cost       = Int
-type DeltaCost    = Int
-type Terrain    = V.Vector Cost
+type Cost           = Int
+type DeltaCost      = Int
+type Terrain        = V.Vector Cost
 type EstimateCache  = V.Vector Cost
 type ForwardCache   = V.Vector Cost
 
@@ -130,12 +130,13 @@ type PathEnv = ReaderT Env
 data PathVars = PathVars{ getEC :: EstimateCache, getFC :: ForwardCache, getPQ :: PathHeap }
 type PathState = State PathVars
 
+data PathContext = PathContext{ getEnv :: Env, getPathVars :: PathVars} | Empty
+data TerrainChange = TerrainChange Location Cost
 
 printVector :: Bool -> V.Vector Cost -> IO ()
 printVector bool vector = putStrLn . concat $ V.ifoldr' print [] vector
   where
-    print i x str 
-      | i == 0 = ["_"] ++ ( map (\i -> "_"++ show i ++"_") . take xGridSize $ iterate (+1) 0) ++ ["\n\n"] ++ [show (quot i yGridSize) ++ " "] ++ p i x
+    print i x str
       | rem i yGridSize == 0 = [show (quot i yGridSize) ++ " "] ++ p i x
       | otherwise = p i x
       where p i x = if rem (i+1) xGridSize == 0 then symbol x :"\n":str else symbol x : str
@@ -173,19 +174,24 @@ initialize (Goal gx gy) (Start sx sy) terrain = (pathenv, pathvars)
 
     forward :: V.Vector Int
     forward = V.replicate (xGridSize * yGridSize) costMax V.// [(gpos, 0)]
-    
+
     dK = 0
 
     pathenv  = Env terrain goal start dK
     pathvars = PathVars estimate forward $ ISQ.singleton gpos (Priority (h goal start, 0)) goal
 
 test = do
-  let (PathVars ec fc pq) = findPath (Goal 0 50) (Start 99 50) terrain
 --  printVector False t
 --  putStrLn "-----------------------------------"
   printVector True ec
-  where 
+  where
     terrain = terrain1
+    start = Start 99 50
+    goal  = Goal 0 50
+    s0 = Location 99 50 $ vpos 99 50
+    (s', ec) = case newPath goal start terrain of
+      (Just loc, Just pc) -> (loc, getEC $ getPathVars pc)
+      (Nothing, Just pc) -> (s0, getEC $ getPathVars pc)
 
 -- procedure Main ()
 --  s₊ = s₀ ;
@@ -210,14 +216,20 @@ test = do
 --          rhs(u) = min s′∈Succ(u) (c(u,s′)+ g(s′)) ;
 --      UpdateVertex (u) ;
 --    ComputeShortestPath() ;
-findPath :: Goal -> Start -> Terrain -> PathVars
-findPath goal@(Goal gx gy) start@(Start sx sy) terrain 
-  | sx /= gx || sy /= gy = undefined
-  | otherwise = pathvars
+
+newPath :: Goal -> Start -> Terrain -> (Maybe Location, Maybe PathContext)
+newPath goal start terrain =
+  let (pathenv, pathvars) = initialize goal start terrain
+  in findPath pathenv pathvars []
+
+findPath :: Env -> PathVars -> [TerrainChange] -> (Maybe Location, Maybe PathContext)
+findPath pathenv@(Env terrain goal start dK) pathvars changeList
+  | goal == start = (Nothing, Nothing)
+  | null changeList = (nextLocation, Just $ PathContext pathenv pathvars)
+  | otherwise = (nextLocation, Just $ PathContext pathenv pathvars')
   where
-    computePathVars = execState ( runReaderT computeShortestPath pathenv ) pathvars
-    nextLocation = evalState ( runReaderT cheapestMove pathenv )
-    (pathenv, pathvars) = initialize goal start terrain
+    pathvars' = execState ( runReaderT computeShortestPath pathenv ) pathvars
+    nextLocation = evalState ( runReaderT cheapestMove pathenv ) pathvars'
 
 cheapestMove :: PathEnv PathState (Maybe Location)
 cheapestMove = do
@@ -227,12 +239,13 @@ cheapestMove = do
   if g_start >= costMax then return Nothing else
     fmap Just (foldM minOfNeighbors start (neighbors start))
 
-  where minOfNeighbors s s' = do
-    g_s  <- g s
-    c_s  <- c s
-    g_s' <- g s'
-    c_s' <- c s'
-    return $ if g_s + c_s <= g_s' + c_s' then s else s'
+  where
+    minOfNeighbors s s' = do
+      g_s  <- g s
+      c_s  <- c s
+      g_s' <- g s'
+      c_s' <- c s'
+      return $ if g_s + c_s <= g_s' + c_s' then s else s'
 
 computeShortestPath :: PathEnv PathState EstimateCache
 computeShortestPath = do
