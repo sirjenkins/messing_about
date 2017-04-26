@@ -63,7 +63,7 @@
 --    ComputeShortestPath() ;
 
 {-# LANGUAGE DeriveGeneric #-}
---module PathFinding (newPath, findPath, PathContext) where
+--module PathFinding (newPath, adjustPath, PathContext) where
 
 import GHC.Generics (Generic)
 import Data.Hashable
@@ -183,15 +183,18 @@ initialize (Goal gx gy) (Start sx sy) terrain = (pathenv, pathvars)
 test = do
 --  printVector False t
 --  putStrLn "-----------------------------------"
+  print s'
+  print s''
   printVector True ec
   where
     terrain = terrain1
     start = Start 99 50
     goal  = Goal 0 50
-    s0 = Location 99 50 $ vpos 99 50
+    s0 = Location 50 50 $ vpos 99 50
     (s', ec) = case newPath goal start terrain of
       (Just loc, Just pc) -> (loc, getEC $ getPathVars pc)
       (Nothing, Just pc) -> (s0, getEC $ getPathVars pc)
+    s'' = ec V.! 5098
 
 -- procedure Main ()
 --  s₊ = s₀ ;
@@ -220,10 +223,10 @@ test = do
 newPath :: Goal -> Start -> Terrain -> (Maybe Location, Maybe PathContext)
 newPath goal start terrain =
   let (pathenv, pathvars) = initialize goal start terrain
-  in findPath pathenv pathvars []
+  in adjustPath pathenv pathvars []
 
-findPath :: Env -> PathVars -> [TerrainChange] -> (Maybe Location, Maybe PathContext)
-findPath pathenv@(Env terrain goal start dK) pathvars changeList
+adjustPath :: Env -> PathVars -> [TerrainChange] -> (Maybe Location, Maybe PathContext)
+adjustPath pathenv@(Env terrain goal start dK) pathvars changeList
   | goal == start = (Nothing, Nothing)
   | null changeList = (nextLocation, Just $ PathContext pathenv pathvars)
   | otherwise = (nextLocation, Just $ PathContext pathenv pathvars')
@@ -234,10 +237,12 @@ findPath pathenv@(Env terrain goal start dK) pathvars changeList
 cheapestMove :: PathEnv PathState (Maybe Location)
 cheapestMove = do
   (Env _ _ start _) <- ask
+  let ns = neighbors start
   g_start <- g start
 
-  if g_start >= costMax then return Nothing else
-    fmap Just (foldM minOfNeighbors start (neighbors start))
+  s_next <- foldM minOfNeighbors start $ neighbors start
+  g_next <- g s_next
+  return $ if g_next >= costMax then Nothing else Just s_next
 
   where
     minOfNeighbors s s' = do
@@ -247,15 +252,15 @@ cheapestMove = do
       c_s' <- c s'
       return $ if g_s + c_s <= g_s' + c_s' then s else s'
 
-computeShortestPath :: PathEnv PathState EstimateCache
+computeShortestPath :: PathEnv PathState ()
 computeShortestPath = do
   (Env _ goal start _) <- ask
 
-  prio_start    <- calcPrio start
+  prio_start      <- calcPrio start
   (top, prio_top) <- getTopU
-  prio_top'     <- calcPrio top
-  r_start     <- r start
-  g_start     <- g start
+  prio_top'       <- calcPrio top
+  r_start         <- r start
+  g_start         <- g start
 
   r_top <- r top
   g_top <- g top
@@ -283,14 +288,14 @@ computeShortestPath = do
         r_s <- r s
         c_s <- c s
         when (r_s == c_s + g_top) $ do
-          r'_s <- foldl' minOfNeighbors (return costMax) (neighbors s)
+          r'_s <- foldl' minCost (return costMax) (neighbors s)
           rs s r'_s
         )
       forM_ (top:n) updatePQ
       computeShortestPath
-  else gets getEC
+  else return ()
   where
-    minOfNeighbors s s' = do
+    minCost s s' = do
       r_s <- s
       g_s' <- g s'
       c_s' <- c s'
@@ -330,7 +335,6 @@ updatePriority s@(Location x y pos) p = do
   (PathVars ec fc pq) <- get
   put (PathVars ec fc $ snd (ISQ.alter (const (0, Just (p, s))) pos pq))
 
-  
 findMovementCost :: Location -> PathEnv PathState Cost
 findMovementCost (Location _ _ pos) = do
   (Env costs _ _ _) <- ask
