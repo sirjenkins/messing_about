@@ -93,7 +93,10 @@ data Start = Start Int Int deriving (Read, Show, Eq, Ord, Generic)
 instance Hashable Location
 
 h :: Location -> Location -> Int
-h (Location ax ay _) (Location bx by _) = max (abs (ax - bx)) (abs (ay - by))
+h (Location ax ay _) (Location bx by _) = 10 * (dx + dy) + (14 - 2 * 10) * (min dx dy)
+  where
+    dx = abs $ ax - bx
+    dy = abs $ ay - by
 
 vpos :: Int -> Int-> Int
 vpos x y = y * yGridSize + x
@@ -149,8 +152,8 @@ printVector bool vector = putStrLn . concat $ V.ifoldr' print [] vector
 terrain1 :: Terrain
 terrain1 = V.generate (xGridSize * yGridSize) (const 1)
 
-terrain1and5 :: Terrain
-terrain1and5 = V.generate (xGridSize * yGridSize) (\i -> if mod i 3 == 0 || mod i 2 == 1 then 1 else 5)
+terrainSplitVertical :: Terrain
+terrainSplitVertical = V.generate (xGridSize * yGridSize) (\i -> if odd (i `div` 50) && i `rem` 50 == 0 then costMax else 1)
 --terrainNoPathCorner = V.generate (xGridSize * yGridSize) (\i -> if i == 88 || i == 98 || i == 89 then costMax else 5)
 --terrainNoPathWall = V.generate (xGridSize * yGridSize) (\i -> if i >= 70 && i < 80 then costMax else 5)
 --
@@ -181,20 +184,21 @@ initialize (Goal gx gy) (Start sx sy) terrain = (pathenv, pathvars)
     pathvars = PathVars estimate forward $ ISQ.singleton gpos (Priority (h goal start, 0)) goal
 
 test = do
---  printVector False t
---  putStrLn "-----------------------------------"
+--  printVector True terrain
   print s'
-  print s''
   printVector True ec
   where
+--   terrain = terrainSplitVertical
     terrain = terrain1
-    start = Start 99 50
-    goal  = Goal 0 50
+--    start = Start 99 50
+--    goal  = Goal 0 50
+    start = Start 0 0
+    goal  = Goal 99 99
+
     s0 = Location 50 50 $ vpos 99 50
     (s', ec) = case newPath goal start terrain of
       (Just loc, Just pc) -> (loc, getEC $ getPathVars pc)
       (Nothing, Just pc) -> (s0, getEC $ getPathVars pc)
-    s'' = ec V.! 5098
 
 -- procedure Main ()
 --  s₊ = s₀ ;
@@ -240,17 +244,17 @@ cheapestMove = do
   let ns = neighbors start
   g_start <- g start
 
-  s_next <- foldM minOfNeighbors start $ neighbors start
+  s_next <- foldM (minOfNeighbors start) start $ neighbors start
   g_next <- g s_next
   return $ if g_next >= costMax then Nothing else Just s_next
 
   where
-    minOfNeighbors s s' = do
-      g_s  <- g s
-      c_s  <- c s
-      g_s' <- g s'
-      c_s' <- c s'
-      return $ if g_s + c_s <= g_s' + c_s' then s else s'
+    minOfNeighbors s0 sa sb = do
+      g_sa  <- g sa
+      c_sa  <- c s0 sa
+      g_sb <- g sb
+      c_sb <- c s0 sb
+      return $ if g_sa + c_sa <= g_sb + c_sb then sa else sb
 
 computeShortestPath :: PathEnv PathState ()
 computeShortestPath = do
@@ -276,7 +280,7 @@ computeShortestPath = do
       let n = neighbors top
       forM_ (filter (/= goal) n) (\s -> do
           r_s <- r s
-          c_s <- c s
+          c_s <- c top s
           rs s . min r_s $ c_s + g_top'
         )
       forM_ n updatePQ
@@ -286,20 +290,20 @@ computeShortestPath = do
       let n = neighbors top
       forM_ (filter (/= goal) (top:n)) (\s -> do
         r_s <- r s
-        c_s <- c s
+        c_s <- c top s
         when (r_s == c_s + g_top) $ do
-          r'_s <- foldl' minCost (return costMax) (neighbors s)
+          r'_s <- foldl' (minCost top) (return costMax) (neighbors s)
           rs s r'_s
         )
       forM_ (top:n) updatePQ
       computeShortestPath
   else return ()
   where
-    minCost s s' = do
-      r_s <- s
-      g_s' <- g s'
-      c_s' <- c s'
-      return $ min r_s (g_s' + c_s')
+    minCost s0 sa sb = do
+      r_sa <- sa
+      g_sb <- g sb
+      c_sb <- c s0 sb
+      return $ min r_sa (g_sb + c_sb)
 
 updatePQ :: Location -> PathEnv PathState ()
 updatePQ u = do
@@ -335,10 +339,12 @@ updatePriority s@(Location x y pos) p = do
   (PathVars ec fc pq) <- get
   put (PathVars ec fc $ snd (ISQ.alter (const (0, Just (p, s))) pos pq))
 
-findMovementCost :: Location -> PathEnv PathState Cost
-findMovementCost (Location _ _ pos) = do
+findMovementCost :: Location -> Location -> PathEnv PathState Cost
+findMovementCost (Location x y _) (Location x' y' pos')
+  | x == x' && y == y' = return 0
+  | otherwise = do
   (Env costs _ _ _) <- ask
-  return $ costs V.! pos
+  return $ costs V.! pos' + if x == x' || y == y' then 5 else 7
 c = findMovementCost
 
 findGValue :: Location -> PathEnv PathState Cost
