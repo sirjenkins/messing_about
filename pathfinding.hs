@@ -1,66 +1,3 @@
--- procedure CalculateKey(s)
---  return [ min(g(s), rhs(s)) + h(s₀, s) + k m,
---       min(g(s), rhs(s)) ];
-
--- procedure Initialize()
---  U = ∅;
---  k m =0;
---  for all s∈S
---    rhs(s) = g(s) = ∞;
---  rhs(s goal) = 0;
---  U.Insert(s goal, [h(s₀ ,s goal); 0]);
--- 
--- procedure UpdateVertex(u)
---  if(    g(u) ≠ rhs ( u) AND u ∈ U) U.Update(u,CalculateKey(u));
---  else if( g(u) ≠ rhs ( u) AND u ∉ U) U.Insert(u,CalculateKey(u));
---  else if( g(u) = rhs ( u) AND u ∈ U) U.Remove(u);
--- 
--- procedure ComputeShortestPath()
---  while ( U.TopKey() < CalculateKey(s₀) OR rhs(s₀) > g(s₀))
---    u = U.Top() ;
---    k old = U.TopKey() ;
---    k new = CalculateKey(u)) ;
---    if ( k old < k new)
---      U.Update(u,k new);
---    else if(g(u) > rhs(u))
---      g(u)= rhs(u);
---      U.Remove(u) ;
---      for all s∈Pred(u)
---        if (s ≠ s goal)
---          rhs(s) = min( rhs(s), c(s,u) + g(u));
---        UpdateVertex ( s) ;
---    else
---      g old = g(u) ;
---      g(u)= ∞ ;
---      for all s∈Pred(u) ∪ {u}
---        if (rhs(s) = c (s,u) + g old)
---          if (s ≠ s goal)
---            rhs(s) = min s′∈Succ(s) (c(s,s′)+ g (s′));
---        UpdateVertex (s);
---
--- procedure Main ()
---  s₊ = s₀ ;
---  Initialize () ;
---  ComputeShortestPath () ;
---  while ( s₀ ≠ s goal)
---  /* if ( g ( s₀)= ∞) then there is no known path */
---  s₀ = argmin s ∈ Succ(s₀) (c(s₀ ,s′) + g(s′)) ;
---  Move to s₀ ;
---  Scan graph for changed edge costs;
---  if any edge costs changed
---    k m = k m + h(s₊ ,s₀);
---    s₊ = s₀;
---    for all directed edges (u,v) with changed edge costs
---      c old = c(u,v) ;
---      Update the edge costc ( u,v) ;
---      if (c old > c( u,v))
---        if ( u ≠ s goal)
---          rhs(u) = min(rhs(u), c(u,v) + g(v)) ;
---      else if (rhs(u)= c old + g(v))
---        if (u ≠ s goal)
---          rhs(u) = min s′∈Succ(u) (c(u,s′)+ g(s′)) ;
---      UpdateVertex (u) ;
---    ComputeShortestPath() ;
 
 {-# LANGUAGE DeriveGeneric #-}
 --module PathFinding (newPath, adjustPath, PathContext) where
@@ -135,6 +72,7 @@ type PathState = State PathVars
 
 data PathContext = PathContext{ getEnv :: Env, getPathVars :: PathVars} | Empty
 data TerrainChange = TerrainChange Location Cost
+data CostChange = CostChange Location Cost
 
 printVector :: Bool -> V.Vector Cost -> IO ()
 printVector bool vector = putStrLn . concat $ V.ifoldr' print [] vector
@@ -154,16 +92,6 @@ terrain1 = V.generate (xGridSize * yGridSize) (const 1)
 
 terrainSplitVertical :: Terrain
 terrainSplitVertical = V.generate (xGridSize * yGridSize) (\i -> if odd (i `div` 50) && i `rem` 50 == 0 then costMax else 1)
---terrainNoPathCorner = V.generate (xGridSize * yGridSize) (\i -> if i == 88 || i == 98 || i == 89 then costMax else 5)
---terrainNoPathWall = V.generate (xGridSize * yGridSize) (\i -> if i >= 70 && i < 80 then costMax else 5)
---
---terrain138 :: Terrain
---terrain138 = V.generate (xGridSize * yGridSize) (\i -> if rem i 3 == 0 || rem i 2 == 1 || rem i 5 == 0 then 1 else 8)
---terrain325 :: Terrain
---terrain325 = V.generate (xGridSize * yGridSize) (\i -> if rem i 3 == 0 || rem i 2 == 1 || rem i 5 > 4 then 8 else 1)
---
---terrain4 :: Terrain
---terrain4 = V.generate (xGridSize * yGridSize) (\i -> if rem i 4 <= 1 then 1 else 8)
 
 initialize :: Goal -> Start -> Terrain -> (Env, PathVars)
 initialize (Goal gx gy) (Start sx sy) terrain = (pathenv, pathvars)
@@ -227,10 +155,42 @@ test = do
 newPath :: Goal -> Start -> Terrain -> (Maybe Location, Maybe PathContext)
 newPath goal start terrain =
   let (pathenv, pathvars) = initialize goal start terrain
-  in adjustPath pathenv pathvars []
+  in findPath pathenv pathvars []
 
-adjustPath :: Env -> PathVars -> [TerrainChange] -> (Maybe Location, Maybe PathContext)
-adjustPath pathenv@(Env terrain goal start dK) pathvars changeList
+
+updateContext :: Location -> PathContext -> [CostChange] -> PathContext
+updateContext start' (PathContext pathenv@(Env terrain goal start dK) pathvars) changeList =
+  let pathenv' = Env terrain goal start' $ dK + h start start'
+      update = mapM_ updateVars changeList
+
+  in PathContext pathenv' $ execState ( runReaderT update pathenv ) pathvars
+
+updateVars :: CostChange -> PathEnv PathState ()
+updateVars (CostChange v gridCost) = do
+  (Env _ goal _ _) <- ask
+
+  forM_ (filter (/= goal) (neighbors v)) (\u -> do
+      r_u <- r u
+      g_v <- g v
+      c_v <- c u v
+      let c_old = gridCost + moveCost u v
+
+      if c_old > c_v then
+        rs u . min r_u $ c_v + g_v
+      else when (r_u == c_old + g_v) $
+        foldl' (minCost v) (return costMax) (neighbors u) >>= (\r'_u -> rs u r'_u)
+
+      updatePQ u
+    )
+  where
+    minCost s0 sa sb = do
+      r_sa <- sa
+      g_sb <- g sb
+      c_sb <- c s0 sb
+      return $ min r_sa (g_sb + c_sb)
+
+findPath :: Env -> PathVars -> [TerrainChange] -> (Maybe Location, Maybe PathContext)
+findPath pathenv@(Env terrain goal start dK) pathvars changeList
   | goal == start = (Nothing, Nothing)
   | null changeList = (nextLocation, Just $ PathContext pathenv pathvars)
   | otherwise = (nextLocation, Just $ PathContext pathenv pathvars')
@@ -339,12 +299,18 @@ updatePriority s@(Location x y pos) p = do
   (PathVars ec fc pq) <- get
   put (PathVars ec fc $ snd (ISQ.alter (const (0, Just (p, s))) pos pq))
 
+terrainCost :: Location -> Terrain -> Cost
+terrainCost (Location _ _ pos) terrain = terrain V.! pos
+
+moveCost :: Location -> Location -> Cost
+moveCost (Location x y _) (Location x' y' _)
+  | x == x' || y == y'  = 5
+  | otherwise           = 7
+
 findMovementCost :: Location -> Location -> PathEnv PathState Cost
-findMovementCost (Location x y _) (Location x' y' pos')
+findMovementCost s@(Location x y _) s'@(Location x' y' pos')
   | x == x' && y == y' = return 0
-  | otherwise = do
-  (Env costs _ _ _) <- ask
-  return $ costs V.! pos' + if x == x' || y == y' then 5 else 7
+  | otherwise = ask >>= (\(Env costs _ _ _) -> return $ costs V.! pos' + moveCost s s')
 c = findMovementCost
 
 findGValue :: Location -> PathEnv PathState Cost
@@ -393,5 +359,69 @@ calcPriority start delta_cost estimate lookahead location =
     where m = estimate `seq` lookahead `seq` min estimate lookahead
 
 
-
 main = test
+
+-- procedure CalculateKey(s)
+--  return [ min(g(s), rhs(s)) + h(s₀, s) + k m,
+--       min(g(s), rhs(s)) ];
+
+-- procedure Initialize()
+--  U = ∅;
+--  k m =0;
+--  for all s∈S
+--    rhs(s) = g(s) = ∞;
+--  rhs(s goal) = 0;
+--  U.Insert(s goal, [h(s₀ ,s goal); 0]);
+-- 
+-- procedure UpdateVertex(u)
+--  if(    g(u) ≠ rhs ( u) AND u ∈ U) U.Update(u,CalculateKey(u));
+--  else if( g(u) ≠ rhs ( u) AND u ∉ U) U.Insert(u,CalculateKey(u));
+--  else if( g(u) = rhs ( u) AND u ∈ U) U.Remove(u);
+-- 
+-- procedure ComputeShortestPath()
+--  while ( U.TopKey() < CalculateKey(s₀) OR rhs(s₀) > g(s₀))
+--    u = U.Top() ;
+--    k old = U.TopKey() ;
+--    k new = CalculateKey(u)) ;
+--    if ( k old < k new)
+--      U.Update(u,k new);
+--    else if(g(u) > rhs(u))
+--      g(u)= rhs(u);
+--      U.Remove(u) ;
+--      for all s∈Pred(u)
+--        if (s ≠ s goal)
+--          rhs(s) = min( rhs(s), c(s,u) + g(u));
+--        UpdateVertex ( s) ;
+--    else
+--      g old = g(u) ;
+--      g(u)= ∞ ;
+--      for all s∈Pred(u) ∪ {u}
+--        if (rhs(s) = c (s,u) + g old)
+--          if (s ≠ s goal)
+--            rhs(s) = min s′∈Succ(s) (c(s,s′)+ g (s′));
+--        UpdateVertex (s);
+--
+-- procedure Main ()
+--  s₊ = s₀ ;
+--  Initialize () ;
+--  ComputeShortestPath () ;
+--  while ( s₀ ≠ s goal)
+--  /* if ( g ( s₀)= ∞) then there is no known path */
+--  s₀ = argmin s ∈ Succ(s₀) (c(s₀ ,s′) + g(s′)) ;
+--  Move to s₀ ;
+--  Scan graph for changed edge costs;
+--  if any edge costs changed
+--    k m = k m + h(s₊ ,s₀);
+--    s₊ = s₀;
+--    for all directed edges (u,v) with changed edge costs
+--      c old = c(u,v) ;
+--      Update the edge costc ( u,v) ;
+--      if (c old > c( u,v))
+--        if ( u ≠ s goal)
+--          rhs(u) = min(rhs(u), c(u,v) + g(v)) ;
+--      else if (rhs(u)= c old + g(v))
+--        if (u ≠ s goal)
+--          rhs(u) = min s′∈Succ(u) (c(u,s′)+ g(s′)) ;
+--      UpdateVertex (u) ;
+--    ComputeShortestPath() ;
+
