@@ -72,7 +72,6 @@ type PathState = State PathVars
 
 data PathContext = PathContext{ getEnv :: Env, getPathVars :: PathVars} | Empty
 data TerrainChange = TerrainChange Location Cost
-data CostChange = CostChange Location Cost
 
 printVector :: Bool -> V.Vector Cost -> IO ()
 printVector bool vector = putStrLn . concat $ V.ifoldr' print [] vector
@@ -158,36 +157,36 @@ newPath goal start terrain =
   in findPath pathenv pathvars []
 
 
-updateContext :: Location -> PathContext -> [CostChange] -> PathContext
+updateContext :: Location -> PathContext -> [TerrainChange] -> PathContext
 updateContext start' (PathContext pathenv@(Env terrain goal start dK) pathvars) changeList =
-  let pathenv' = Env terrain goal start' $ dK + h start start'
-      update = mapM_ updateVars changeList
 
-  in PathContext pathenv' $ execState ( runReaderT update pathenv ) pathvars
+  PathContext pathenv' $ execState ( runReaderT adjustVars pathenv ) pathvars
 
-updateVars :: CostChange -> PathEnv PathState ()
-updateVars (CostChange v gridCost) = do
-  (Env _ goal _ _) <- ask
-
-  forM_ (filter (/= goal) (neighbors v)) (\u -> do
-      r_u <- r u
-      g_v <- g v
-      c_v <- c u v
-      let c_old = gridCost + moveCost u v
-
-      if c_old > c_v then
-        rs u . min r_u $ c_v + g_v
-      else when (r_u == c_old + g_v) $
-        foldl' (minCost v) (return costMax) (neighbors u) >>= rs u
-
-      updatePQ u
-    )
   where
+    pathenv' = Env terrain goal start' $ dK + h start start'
     minCost s0 sa sb = do
       r_sa <- sa
       g_sb <- g sb
       c_sb <- c s0 sb
       return $ min r_sa (g_sb + c_sb)
+
+    adjustVars = forM_ changeList (\ (TerrainChange v gridCost) -> do
+      (Env _ goal _ _) <- ask
+
+      forM_ (filter (/= goal) (neighbors v)) (\u -> do
+          r_u <- r u
+          g_v <- g v
+          c_v <- c u v
+          let c_old = gridCost + moveCost u v
+
+          if c_old > c_v then
+            rs u . min r_u $ c_v + g_v
+          else when (r_u == c_old + g_v) $
+            foldl' (minCost v) (return costMax) (neighbors u) >>= rs u
+
+          updatePQ u
+        )
+      )
 
 findPath :: Env -> PathVars -> [TerrainChange] -> (Maybe Location, Maybe PathContext)
 findPath pathenv@(Env terrain goal start dK) pathvars changeList
