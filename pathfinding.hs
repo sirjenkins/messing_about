@@ -30,7 +30,7 @@ data Start = Start Int Int deriving (Read, Show, Eq, Ord, Generic)
 instance Hashable Location
 
 h :: Location -> Location -> Int
-h (Location ax ay _) (Location bx by _) = 10 * (dx + dy) + (14 - 2 * 10) * (min dx dy)
+h (Location ax ay _) (Location bx by _) = 10 * (dx + dy) + (14 - 2 * 10) * min dx dy
   where
     dx = abs $ ax - bx
     dy = abs $ ay - by
@@ -78,7 +78,7 @@ printVector :: Bool -> V.Vector Cost -> IO ()
 printVector bool vector = putStrLn . concat $ V.ifoldr' print [] vector
   where
     print i x str
-      | rem i yGridSize == 0 = [show (quot i yGridSize) ++ " "] ++ p i x
+      | rem i yGridSize == 0 = (show (quot i yGridSize) ++ " ") : p i x
       | otherwise = p i x
       where p i x = if rem (i+1) xGridSize == 0 then symbol x :"\n":str else symbol x : str
 
@@ -178,7 +178,7 @@ updateVars (CostChange v gridCost) = do
       if c_old > c_v then
         rs u . min r_u $ c_v + g_v
       else when (r_u == c_old + g_v) $
-        foldl' (minCost v) (return costMax) (neighbors u) >>= (\r'_u -> rs u r'_u)
+        foldl' (minCost v) (return costMax) (neighbors u) >>= rs u
 
       updatePQ u
     )
@@ -229,7 +229,7 @@ computeShortestPath = do
   r_top <- r top
   g_top <- g top
 
-  if prio_top < prio_start || r_start > g_start then
+  when (prio_top < prio_start || r_start > g_start) $
     if prio_top < prio_top' then do
       updatePriority top prio_top'
       computeShortestPath
@@ -257,7 +257,7 @@ computeShortestPath = do
         )
       forM_ (top:n) updatePQ
       computeShortestPath
-  else return ()
+
   where
     minCost s0 sa sb = do
       r_sa <- sa
