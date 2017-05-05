@@ -1,6 +1,12 @@
-
 {-# LANGUAGE DeriveGeneric #-}
---module PathFinding (newPath, adjustPath, PathContext) where
+module Pathfinding (
+    newPath
+    , PathContext
+    , Goal
+    , Start
+    , Location
+    , test
+  ) where
 
 import GHC.Generics (Generic)
 import Data.Hashable
@@ -357,8 +363,6 @@ calcPriority start delta_cost estimate lookahead location =
   Priority ( m + h start location + delta_cost, m)
     where m = estimate `seq` lookahead `seq` min estimate lookahead
 
-
-main = test
 
 -- procedure CalculateKey(s)
 --  return [ min(g(s), rhs(s)) + h(s₀, s) + k m,
