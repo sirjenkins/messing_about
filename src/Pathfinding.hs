@@ -1,7 +1,7 @@
 {-# LANGUAGE DeriveGeneric #-}
 module Pathfinding (
     newPath
-    , PathContext
+    , Path
     , Goal
     , Start
     , Location
@@ -44,6 +44,16 @@ h (Location ax ay _) (Location bx by _) = 10 * (dx + dy) + (14 - 2 * 10) * min d
 vpos :: Int -> Int-> Int
 vpos x y = y * yGridSize + x
 
+class Position a where
+  convert :: a -> Location
+
+instance Position Start where
+  convert (Start sx sy) = Location sx sy $ vpos sx sy
+
+instance Position Goal where
+  convert (Goal gx gy) = Location gx gy $ vpos gx gy
+
+
 neighbors (Location x y _) = map (\(dx,dy) -> Location dx dy (dy * yGridSize + dx)) $ neighborhood x y
   where
     neighborhood x y
@@ -76,7 +86,7 @@ type PathEnv = ReaderT Env
 data PathVars = PathVars{ getEC :: EstimateCache, getFC :: ForwardCache, getPQ :: PathHeap }
 type PathState = State PathVars
 
-data PathContext = PathContext{ getEnv :: Env, getPathVars :: PathVars} | Empty
+data Path = Path{ getEnv :: Env, getPathVars :: PathVars} | Empty
 data TerrainChange = TerrainChange Location Cost
 
 printVector :: Bool -> V.Vector Cost -> IO ()
@@ -133,50 +143,40 @@ test = do
       (Just loc, Just pc) -> (loc, getEC $ getPathVars pc)
       (Nothing, Just pc) -> (s0, getEC $ getPathVars pc)
 
--- procedure Main ()
---  s₊ = s₀ ;
---  Initialize () ;
---  ComputeShortestPath () ;
---  while ( s₀ ≠ s goal)
---  /* if ( g ( s₀)= ∞) then there is no known path */
---  s₀ = argmin s ∈ Succ(s₀) (c(s₀ ,s′) + g(s′)) ;
---  Move to s₀ ;
---  Scan graph for changed edge costs;
---  if any edge costs changed
---    k m = k m + h(s₊ ,s₀);
---    s₊ = s₀;
---    for all directed edges (u,v) with changed edge costs
---      c old = c(u,v) ;
---      Update the edge costc ( u,v) ;
---      if (c old > c( u,v))
---        if ( u ≠ s goal)
---          rhs(u) = min(rhs(u), c(u,v) + g(v)) ;
---      else if (rhs(u)= c old + g(v))
---        if (u ≠ s goal)
---          rhs(u) = min s′∈Succ(u) (c(u,s′)+ g(s′)) ;
---      UpdateVertex (u) ;
---    ComputeShortestPath() ;
 
-newPath :: Goal -> Start -> Terrain -> (Maybe Location, Maybe PathContext)
-newPath goal start terrain =
-  let (pathenv, pathvars) = initialize goal start terrain
-  in findPath pathenv pathvars []
+newPath :: Goal -> Start -> Terrain -> (Maybe Location, Maybe Path)
+newPath goal start terrain = (next_location, Just $ Path pathenv pathvars')
+  where
+    (pathenv, pathvars) = initialize goal start terrain
+    pathvars'           = execState ( runReaderT computeShortestPath pathenv ) pathvars
+    next_location       = evalState ( runReaderT cheapestMove pathenv ) pathvars'
 
+nextLocation :: Start -> [TerrainChange] -> Path -> (Maybe Location, Maybe Path)
+nextLocation start' change_list path@(Path env@(Env terrain goal start dK) pathvars)
+  | goal == convert start'    = (Nothing, Nothing)
+  | null change_list          = (next_location, Just path)
+  | otherwise                 = (next_location, Just path')
+  where
+    path'         = updateContext start' change_list env pathvars
+    pathvars'     = execState ( runReaderT computeShortestPath env ) pathvars
+    next_location = evalState ( runReaderT cheapestMove env ) pathvars'
 
-updateContext :: Location -> PathContext -> [TerrainChange] -> PathContext
-updateContext start' (PathContext pathenv@(Env terrain goal start dK) pathvars) changeList =
+updateContext :: Start -> [TerrainChange] -> Env -> PathVars -> Path
+updateContext s0 change_list pathenv@(Env terrain goal start dK) pathvars =
 
-  PathContext pathenv' $ execState ( runReaderT adjustVars pathenv ) pathvars
+  Path pathenv' $ execState ( runReaderT adjustVars pathenv' ) pathvars
 
   where
-    pathenv' = Env terrain goal start' $ dK + h start start'
+    start'    = convert s0
+    pathenv'  = Env terrain goal start' $ dK + h start start'
+
     minCost s0 sa sb = do
       r_sa <- sa
       g_sb <- g sb
       c_sb <- c s0 sb
       return $ min r_sa (g_sb + c_sb)
 
-    adjustVars = forM_ changeList (\ (TerrainChange v gridCost) -> do
+    adjustVars = forM_ change_list (\ (TerrainChange v gridCost) -> do
       (Env _ goal _ _) <- ask
 
       forM_ (filter (/= goal) (neighbors v)) (\u -> do
@@ -191,17 +191,7 @@ updateContext start' (PathContext pathenv@(Env terrain goal start dK) pathvars) 
             foldl' (minCost v) (return costMax) (neighbors u) >>= rs u
 
           updatePQ u
-        )
-      )
-
-findPath :: Env -> PathVars -> [TerrainChange] -> (Maybe Location, Maybe PathContext)
-findPath pathenv@(Env terrain goal start dK) pathvars changeList
-  | goal == start = (Nothing, Nothing)
-  | null changeList = (nextLocation, Just $ PathContext pathenv pathvars)
-  | otherwise = (nextLocation, Just $ PathContext pathenv pathvars')
-  where
-    pathvars' = execState ( runReaderT computeShortestPath pathenv ) pathvars
-    nextLocation = evalState ( runReaderT cheapestMove pathenv ) pathvars'
+        )) >> computeShortestPath
 
 cheapestMove :: PathEnv PathState (Maybe Location)
 cheapestMove = do
