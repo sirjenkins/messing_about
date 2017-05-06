@@ -75,6 +75,7 @@ type DeltaCost      = Int
 type Terrain        = V.Vector Cost
 type EstimateCache  = V.Vector Cost
 type ForwardCache   = V.Vector Cost
+data TerrainChange  = TerrainChange Location Cost
 
 newtype Priority = Priority (Int, Int) deriving (Read, Show, Eq, Ord)
 type PathHeap = ISQ.IntPSQ Priority Location
@@ -88,7 +89,6 @@ data Vars = Vars{ getEC :: EstimateCache, getFC :: ForwardCache, getPQ :: PathHe
 type PathContext = ReaderT Env (State Vars)
 
 data Path = Path{ getEnv :: Env, getVars :: Vars}
-data TerrainChange = TerrainChange Location Cost
 
 printVector :: Bool -> V.Vector Cost -> IO ()
 printVector bool vector = putStrLn . concat $ V.ifoldr' print [] vector
