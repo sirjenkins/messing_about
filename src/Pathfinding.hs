@@ -1,10 +1,11 @@
 {-# LANGUAGE DeriveGeneric #-}
 module Pathfinding (
-    newPath
-    , Path
+      Path
     , Goal
     , Start
     , Location
+    , newPath
+    , nextLocation
     , test
   ) where
 
@@ -30,9 +31,10 @@ yMax = yGridSize - 1
 
 costMax = 1000000 :: Int
 
+data Goal     = Goal Int Int deriving (Read, Show, Eq, Ord, Generic)
+data Start    = Start Int Int deriving (Read, Show, Eq, Ord, Generic)
 data Location = Location Int Int Int deriving (Read, Show, Eq, Ord, Generic)
-data Goal = Goal Int Int deriving (Read, Show, Eq, Ord, Generic)
-data Start = Start Int Int deriving (Read, Show, Eq, Ord, Generic)
+
 instance Hashable Location
 
 h :: Location -> Location -> Int
@@ -82,11 +84,10 @@ data Env = Env { terrain  :: Terrain
         , start   :: Location
         , dK :: Int}
 
-type PathEnv = ReaderT Env
-data PathVars = PathVars{ getEC :: EstimateCache, getFC :: ForwardCache, getPQ :: PathHeap }
-type PathState = State PathVars
+data Vars = Vars{ getEC :: EstimateCache, getFC :: ForwardCache, getPQ :: PathHeap }
+type PathContext = ReaderT Env (State Vars)
 
-data Path = Path{ getEnv :: Env, getPathVars :: PathVars} | Empty
+data Path = Path{ getEnv :: Env, getVars :: Vars}
 data TerrainChange = TerrainChange Location Cost
 
 printVector :: Bool -> V.Vector Cost -> IO ()
@@ -108,8 +109,8 @@ terrain1 = V.generate (xGridSize * yGridSize) (const 1)
 terrainSplitVertical :: Terrain
 terrainSplitVertical = V.generate (xGridSize * yGridSize) (\i -> if odd (i `div` 50) && i `rem` 50 == 0 then costMax else 1)
 
-initialize :: Goal -> Start -> Terrain -> (Env, PathVars)
-initialize (Goal gx gy) (Start sx sy) terrain = (pathenv, pathvars)
+initialize :: Goal -> Start -> Terrain -> (Env, Vars)
+initialize (Goal gx gy) (Start sx sy) terrain = (env, vars)
   where
     gpos = vpos gx gy
     goal = Location gx gy gpos
@@ -123,8 +124,8 @@ initialize (Goal gx gy) (Start sx sy) terrain = (pathenv, pathvars)
 
     dK = 0
 
-    pathenv  = Env terrain goal start dK
-    pathvars = PathVars estimate forward $ ISQ.singleton gpos (Priority (h goal start, 0)) goal
+    env  = Env terrain goal start dK
+    vars = Vars estimate forward $ ISQ.singleton gpos (Priority (h goal start, 0)) goal
 
 test = do
 --  printVector True terrain
@@ -140,35 +141,35 @@ test = do
 
     s0 = Location 50 50 $ vpos 99 50
     (s', ec) = case newPath goal start terrain of
-      (Just loc, Just pc) -> (loc, getEC $ getPathVars pc)
-      (Nothing, Just pc) -> (s0, getEC $ getPathVars pc)
+      (Just loc, Just pc) -> (loc, getEC $ getVars pc)
+      (Nothing, Just pc) -> (s0, getEC $ getVars pc)
 
 
 newPath :: Goal -> Start -> Terrain -> (Maybe Location, Maybe Path)
-newPath goal start terrain = (next_location, Just $ Path pathenv pathvars')
+newPath goal start terrain = (next_location, Just $ Path env vars')
   where
-    (pathenv, pathvars) = initialize goal start terrain
-    pathvars'           = execState ( runReaderT computeShortestPath pathenv ) pathvars
-    next_location       = evalState ( runReaderT cheapestMove pathenv ) pathvars'
+    (env, vars) = initialize goal start terrain
+    vars'           = execState ( runReaderT computeShortestPath env ) vars
+    next_location       = evalState ( runReaderT cheapestMove env ) vars'
 
 nextLocation :: Start -> [TerrainChange] -> Path -> (Maybe Location, Maybe Path)
-nextLocation start' change_list path@(Path env@(Env terrain goal start dK) pathvars)
+nextLocation start' change_list path@(Path env@(Env terrain goal start dK) vars)
   | goal == convert start'    = (Nothing, Nothing)
   | null change_list          = (next_location, Just path)
   | otherwise                 = (next_location, Just path')
   where
-    path'         = updateContext start' change_list env pathvars
-    pathvars'     = execState ( runReaderT computeShortestPath env ) pathvars
-    next_location = evalState ( runReaderT cheapestMove env ) pathvars'
+    path'         = updateContext start' change_list env vars
+    vars'     = execState ( runReaderT computeShortestPath env ) vars
+    next_location = evalState ( runReaderT cheapestMove env ) vars'
 
-updateContext :: Start -> [TerrainChange] -> Env -> PathVars -> Path
-updateContext s0 change_list pathenv@(Env terrain goal start dK) pathvars =
+updateContext :: Start -> [TerrainChange] -> Env -> Vars -> Path
+updateContext s0 change_list env@(Env terrain goal start dK) vars =
 
-  Path pathenv' $ execState ( runReaderT adjustVars pathenv' ) pathvars
+  Path env' $ execState ( runReaderT adjustVars env' ) vars
 
   where
     start'    = convert s0
-    pathenv'  = Env terrain goal start' $ dK + h start start'
+    env'  = Env terrain goal start' $ dK + h start start'
 
     minCost s0 sa sb = do
       r_sa <- sa
@@ -193,7 +194,7 @@ updateContext s0 change_list pathenv@(Env terrain goal start dK) pathvars =
           updatePQ u
         )) >> computeShortestPath
 
-cheapestMove :: PathEnv PathState (Maybe Location)
+cheapestMove :: PathContext (Maybe Location)
 cheapestMove = do
   (Env _ _ start _) <- ask
   let ns = neighbors start
@@ -211,7 +212,7 @@ cheapestMove = do
       c_sb <- c s0 sb
       return $ if g_sa + c_sa <= g_sb + c_sb then sa else sb
 
-computeShortestPath :: PathEnv PathState ()
+computeShortestPath :: PathContext ()
 computeShortestPath = do
   (Env _ goal start _) <- ask
 
@@ -260,7 +261,7 @@ computeShortestPath = do
       c_sb <- c s0 sb
       return $ min r_sa (g_sb + c_sb)
 
-updatePQ :: Location -> PathEnv PathState ()
+updatePQ :: Location -> PathContext ()
 updatePQ u = do
   g_u <- g u
   r_u <- r u
@@ -270,17 +271,17 @@ updatePQ u = do
   else
     removeKey u
 
-upsertPriority :: Priority -> Location -> PathEnv PathState ()
+upsertPriority :: Priority -> Location -> PathContext ()
 upsertPriority p s@(Location x y pos) = do
-  (PathVars ec fc pq) <- get
-  put . PathVars ec fc $ snd (ISQ.alter (const (p, Just (p, s))) pos pq)
+  (Vars ec fc pq) <- get
+  put . Vars ec fc $ snd (ISQ.alter (const (p, Just (p, s))) pos pq)
 
-removeKey :: Location -> PathEnv PathState ()
+removeKey :: Location -> PathContext ()
 removeKey (Location _ _ pos) = do
-  (PathVars ec fc pq) <- get
-  put . PathVars ec fc $ ISQ.delete pos pq
+  (Vars ec fc pq) <- get
+  put . Vars ec fc $ ISQ.delete pos pq
 
-getTopU :: PathEnv PathState (Location, Priority)
+getTopU :: PathContext (Location, Priority)
 getTopU = do
   (Env _ _ start _) <- ask
   prio_start <- calcPrio start
@@ -289,10 +290,10 @@ getTopU = do
     Nothing -> (start, prio_start)
     Just (k,p,v)  -> (v,p)
 
-updatePriority :: Location -> Priority -> PathEnv PathState ()
+updatePriority :: Location -> Priority -> PathContext ()
 updatePriority s@(Location x y pos) p = do
-  (PathVars ec fc pq) <- get
-  put (PathVars ec fc $ snd (ISQ.alter (const (0, Just (p, s))) pos pq))
+  (Vars ec fc pq) <- get
+  put (Vars ec fc $ snd (ISQ.alter (const (0, Just (p, s))) pos pq))
 
 terrainCost :: Location -> Terrain -> Cost
 terrainCost (Location _ _ pos) terrain = terrain V.! pos
@@ -302,37 +303,37 @@ moveCost (Location x y _) (Location x' y' _)
   | x == x' || y == y'  = 5
   | otherwise           = 7
 
-findMovementCost :: Location -> Location -> PathEnv PathState Cost
+findMovementCost :: Location -> Location -> PathContext Cost
 findMovementCost s@(Location x y _) s'@(Location x' y' pos')
   | x == x' && y == y' = return 0
   | otherwise = ask >>= (\(Env costs _ _ _) -> return $ costs V.! pos' + moveCost s s')
 c = findMovementCost
 
-findGValue :: Location -> PathEnv PathState Cost
+findGValue :: Location -> PathContext Cost
 findGValue (Location _ _ pos) = do
-  (PathVars ec _ _) <- get
+  (Vars ec _ _) <- get
   return $ ec `V.unsafeIndex` pos
 g = findGValue
 
-findLookAheadValue :: Location -> PathEnv PathState Cost
+findLookAheadValue :: Location -> PathContext Cost
 findLookAheadValue (Location _ _ pos) = do
-  (PathVars _ fc _) <- get
+  (Vars _ fc _) <- get
   return $ fc `V.unsafeIndex` pos
 r = findLookAheadValue
 
-setGValue :: Location -> Cost -> PathEnv PathState ()
+setGValue :: Location -> Cost -> PathContext ()
 setGValue s@(Location x y pos) val = do
-  (PathVars ec fc pq) <- get
+  (Vars ec fc pq) <- get
   let ec' = mutableWrite pos val ec
-  put (PathVars ec' fc pq)
+  put (Vars ec' fc pq)
 gs = setGValue
 
 
-setLookAheadValue :: Location -> Cost -> PathEnv PathState ()
+setLookAheadValue :: Location -> Cost -> PathContext ()
 setLookAheadValue s@(Location x y pos) val = do
-  (PathVars ec fc pq) <- get
+  (Vars ec fc pq) <- get
   let fc' = mutableWrite pos val fc
-  put (PathVars ec fc' pq)
+  put (Vars ec fc' pq)
 rs = setLookAheadValue
 
 
@@ -341,7 +342,7 @@ mutableWrite i val v = runST (do
     MV.write mv i val
     V.unsafeFreeze mv)
 
-calcPrio :: Location -> PathEnv PathState Priority
+calcPrio :: Location -> PathContext Priority
 calcPrio s = do
   (Env c goal start dK) <- ask
   g_cost <- findGValue s
