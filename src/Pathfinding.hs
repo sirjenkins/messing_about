@@ -31,8 +31,8 @@ yMax = yGridSize - 1
 
 costMax = 1000000 :: Int
 
-data Goal     = Goal Int Int deriving (Read, Show, Eq, Ord, Generic)
-data Start    = Start Int Int deriving (Read, Show, Eq, Ord, Generic)
+data Goal     = Goal Int Int deriving (Read, Show, Eq, Ord)
+data Start    = Start Int Int deriving (Read, Show, Eq, Ord)
 data Location = Location Int Int Int deriving (Read, Show, Eq, Ord, Generic)
 
 instance Hashable Location
