@@ -1,2 +1,5 @@
+import Test.Hspec
+import qualified PathfindingSpec
+
 main :: IO ()
-main = putStrLn "Test suite not yet implemented"
+main = hspec PathfindingSpec.spec

@@ -1,12 +1,13 @@
 {-# LANGUAGE DeriveGeneric #-}
 module Pathfinding (
       Path
-    , Goal
-    , Start
+    , Goal (Goal)
+    , Start (Start)
     , Location
     , newPath
     , nextLocation
-    , test
+    , generateTerrain
+    , printVector
   ) where
 
 import GHC.Generics (Generic)
@@ -90,8 +91,8 @@ type PathContext = ReaderT Env (State Vars)
 
 data Path = Path{ getEnv :: Env, getVars :: Vars}
 
-printVector :: Bool -> V.Vector Cost -> IO ()
-printVector bool vector = putStrLn . concat $ V.ifoldr' print [] vector
+printVector :: Path -> IO ()
+printVector (Path _ (Vars vector _ _)) = putStrLn . concat $ V.ifoldr' print [] vector
   where
     print i x str
       | rem i yGridSize == 0 = (show (quot i yGridSize) ++ " ") : p i x
@@ -101,7 +102,10 @@ printVector bool vector = putStrLn . concat $ V.ifoldr' print [] vector
     symbol x = case compare x costMax of
       EQ -> "∞"
       GT -> "*"
-      LT -> if bool then "." else " " ++ show (rem x 10) ++ " "
+      LT -> "."
+
+generateTerrain :: Terrain
+generateTerrain = terrain1
 
 terrain1 :: Terrain
 terrain1 = V.generate (xGridSize * yGridSize) (const 1)
@@ -126,23 +130,6 @@ initialize (Goal gx gy) (Start sx sy) terrain = (env, vars)
 
     env  = Env terrain goal start dK
     vars = Vars estimate forward $ ISQ.singleton gpos (Priority (h goal start, 0)) goal
-
-test = do
---  printVector True terrain
-  print s'
-  printVector True ec
-  where
---   terrain = terrainSplitVertical
-    terrain = terrain1
---    start = Start 99 50
---    goal  = Goal 0 50
-    start = Start 0 0
-    goal  = Goal 99 99
-
-    s0 = Location 50 50 $ vpos 99 50
-    (s', ec) = case newPath goal start terrain of
-      (Just loc, Just pc) -> (loc, getEC $ getVars pc)
-      (Nothing, Just pc) -> (s0, getEC $ getVars pc)
 
 
 newPath :: Goal -> Start -> Terrain -> (Maybe Location, Maybe Path)
