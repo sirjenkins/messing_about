@@ -1,0 +1,10 @@
+.stack-work
+*.swp
+*.hi
+*.o
+*.prof
+*.aux
+*.hp
+*.ps
+*.dump*
+.DS_Store
