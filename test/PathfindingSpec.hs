@@ -13,5 +13,5 @@ spec = context "finding paths" $ do
         start = Start 0 0
         (loc, path) = newPath goal start plainTerrain
 
-    printVector $ fromJust path
     isJust loc `shouldBe` True
+    fromJust loc `shouldBe` Location 0 0 0

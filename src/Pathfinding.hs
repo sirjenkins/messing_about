@@ -3,7 +3,7 @@ module Pathfinding (
       Path
     , Goal (Goal)
     , Start (Start)
-    , Location
+    , Location (Location)
     , newPath
     , nextLocation
     , generateTerrain
@@ -37,6 +37,9 @@ data Start    = Start Int Int deriving (Read, Show, Eq, Ord)
 data Location = Location Int Int Int deriving (Read, Show, Eq, Ord, Generic)
 
 instance Hashable Location
+
+(===) :: Start -> Goal -> Bool
+(Start sx sy) === (Goal gx gy) = sx == gx && sy == gy
 
 h :: Location -> Location -> Int
 h (Location ax ay _) (Location bx by _) = 10 * (dx + dy) + (14 - 2 * 10) * min dx dy
@@ -82,11 +85,14 @@ newtype Priority = Priority (Int, Int) deriving (Read, Show, Eq, Ord)
 type PathHeap = ISQ.IntPSQ Priority Location
 
 data Env = Env { terrain  :: Terrain
-        , goal    :: Location
-        , start   :: Location
-        , dK :: Int}
+                , goal    :: Location
+                , start   :: Location
+                , dK      :: Int }
 
-data Vars = Vars{ getEC :: EstimateCache, getFC :: ForwardCache, getPQ :: PathHeap }
+data Vars = Vars { getEC  :: EstimateCache
+                  , getFC :: ForwardCache
+                  , getPQ :: PathHeap }
+
 type PathContext = ReaderT Env (State Vars)
 
 data Path = Path{ getEnv :: Env, getVars :: Vars}
@@ -133,20 +139,22 @@ initialize (Goal gx gy) (Start sx sy) terrain = (env, vars)
 
 
 newPath :: Goal -> Start -> Terrain -> (Maybe Location, Maybe Path)
-newPath goal start terrain = (next_location, Just $ Path env vars')
+newPath goal start terrain
+  | start === goal  = (Just $ convert goal, Just $ Path env vars)
+  | otherwise       = (next_location, Just $ Path env vars')
   where
-    (env, vars) = initialize goal start terrain
+    (env, vars)     = initialize goal start terrain
     vars'           = execState ( runReaderT computeShortestPath env ) vars
-    next_location       = evalState ( runReaderT cheapestMove env ) vars'
+    next_location   = evalState ( runReaderT cheapestMove env ) vars'
 
 nextLocation :: Start -> [TerrainChange] -> Path -> (Maybe Location, Maybe Path)
 nextLocation start' change_list path@(Path env@(Env terrain goal start dK) vars)
-  | goal == convert start'    = (Nothing, Nothing)
+  | convert start' == goal    = (Nothing, Nothing)
   | null change_list          = (next_location, Just path)
   | otherwise                 = (next_location, Just path')
   where
     path'         = updateContext start' change_list env vars
-    vars'     = execState ( runReaderT computeShortestPath env ) vars
+    vars'         = execState ( runReaderT computeShortestPath env ) vars
     next_location = evalState ( runReaderT cheapestMove env ) vars'
 
 updateContext :: Start -> [TerrainChange] -> Env -> Vars -> Path
