@@ -22,15 +22,8 @@ import Control.Monad (when, foldM)
 import Control.Monad.State
 import Control.Monad.ST (runST)
 import Control.Monad.Reader
+import Terrain
 
-xGridSize = 100 :: Int
-yGridSize = 100 :: Int
-xMin = 0
-xMax = xGridSize - 1
-yMin = 0
-yMax = yGridSize - 1
-
-costMax = 1000000 :: Int
 
 data Goal     = Goal Int Int deriving (Read, Show, Eq, Ord)
 data Start    = Start Int Int deriving (Read, Show, Eq, Ord)
@@ -110,8 +103,12 @@ printVector (Path _ (Vars vector _ _)) = putStrLn . concat $ V.ifoldr' print [] 
       GT -> "*"
       LT -> "."
 
-generateTerrain :: Terrain
-generateTerrain = terrain1
+
+generateTerrain :: (Int -> Int -> Cost) -> Terrain
+generateTerrain g = V.generate length f
+  where
+    length = xGridSize * yGridSize
+    f v_index = g (v_index `rem` xGridSize) (v_index `quot` yGridSize)
 
 terrain1 :: Terrain
 terrain1 = V.generate (xGridSize * yGridSize) (const 1)

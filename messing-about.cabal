@@ -17,6 +17,7 @@ library
   hs-source-dirs:      src
   exposed-modules:     Lib
   other-modules:       Pathfinding
+                     , Terrain
   build-depends:       base >= 4.7 && < 5
                      , hashable         >= 1.2.6.0
                      , mtl              >= 2.2.1
@@ -37,6 +38,7 @@ test-suite messing-about-test
   type:                exitcode-stdio-1.0
   hs-source-dirs:      test
   main-is:             Spec.hs
+  other-modules:       PathfindingSpec
   build-depends:       base
                      , hspec          >= 2.4.3
                      , messing-about
