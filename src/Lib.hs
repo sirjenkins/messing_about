@@ -1,6 +1,6 @@
 module Lib
     (
-      module Pathfinding
+        module Pathfinding
       , module Terrain
     ) where
 

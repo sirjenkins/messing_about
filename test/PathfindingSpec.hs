@@ -14,4 +14,4 @@ spec = context "finding paths" $ do
         (loc, path) = newPath goal start plain
 
     isJust loc `shouldBe` True
-    fromJust loc `shouldBe` Location 0 0 0
+    fromJust loc `shouldBe` mkLocation 0 0

@@ -3,10 +3,8 @@ module Pathfinding (
       Path
     , Goal (Goal)
     , Start (Start)
-    , Location (Location)
     , newPath
     , nextLocation
-    , generateTerrain
     , printVector
   ) where
 
@@ -22,62 +20,42 @@ import Control.Monad (when, foldM)
 import Control.Monad.State
 import Control.Monad.ST (runST)
 import Control.Monad.Reader
-import Terrain
+import qualified Terrain as T
 
 
 data Goal     = Goal Int Int deriving (Read, Show, Eq, Ord)
 data Start    = Start Int Int deriving (Read, Show, Eq, Ord)
-data Location = Location Int Int Int deriving (Read, Show, Eq, Ord, Generic)
+data Location = Location !Int !Int !Int deriving (Read, Show, Eq, Ord, Generic)
 
 instance Hashable Location
 
 (===) :: Start -> Goal -> Bool
 (Start sx sy) === (Goal gx gy) = sx == gx && sy == gy
 
-h :: Location -> Location -> Int
+h :: Location -> Location -> Cost
 h (Location ax ay _) (Location bx by _) = 10 * (dx + dy) + (14 - 2 * 10) * min dx dy
   where
     dx = abs $ ax - bx
     dy = abs $ ay - by
 
+mkLocation :: Int -> Int -> Location
+mkLocation x y = Location x y $ vpos x y
+
 vpos :: Int -> Int-> Int
-vpos x y = y * yGridSize + x
+vpos x y = y * T.yGridSize + x
 
-class Position a where
-  convert :: a -> Location
-
-instance Position Start where
-  convert (Start sx sy) = Location sx sy $ vpos sx sy
-
-instance Position Goal where
-  convert (Goal gx gy) = Location gx gy $ vpos gx gy
-
-
-neighbors (Location x y _) = map (\(dx,dy) -> Location dx dy (dy * yGridSize + dx)) $ neighborhood x y
-  where
-    neighborhood x y
-      | xMin < x  && x < xMax  && yMin < y  && y < yMax  = [(x-1,y),(x+1,y),(x-1,y-1),(x-1,y+1),(x,y-1),(x,y+1),(x+1,y-1),(x+1,y+1)]
-      | xMin >= x && x < xMax  && yMin < y  && y < yMax  = [(x+1,y),(x,y-1),(x,y+1),(x+1,y-1),(x+1,y+1)]
-      | xMin < x  && x >= xMax && yMin < y  && y < yMax  = [(x-1,y-1),(x-1,y),(x-1,y+1),(x,y-1),(x,y+1)]
-      | xMin < x  && x < xMax  && yMin >= y && y < yMax  = [(x-1,y),(x,y+1),(x+1,y),(x-1,y+1),(x+1,y+1)]
-      | xMin < x  && x < xMax  && yMin < y  && y >= yMax = [(x-1,y-1),(x-1,y),(x,y-1),(x+1,y-1),(x+1,y)]
-      | xMin >= x && x < xMax  && yMin >= y && y < yMax  = [(x,y+1),(x+1,y),(x+1,x+1)]     -- NW corner
-      | xMin >= x && x < xMax  && yMin < y  && y >= yMax = [(x,y-1),(x+1,y-1),(x+1,y)]   -- SW corner
-      | xMin < x  && x >= xMax && yMin >= y && y < yMax  = [(x-1,y),(x-1,y+1),(x,y+1)]   -- NE corner
-      | xMin < x  && x >= xMax && yMin < y  && y >= yMax = [(x-1,y-1),(x-1,y),(x,y-1)] -- SE corner
-
+neighbors :: Location -> [Location]
+neighbors (Location x y _) = T.neighbors (\(x, y) -> mkLocation x y) $ T.mkLocation x y
 
 type Cost           = Int
 type DeltaCost      = Int
-type Terrain        = V.Vector Cost
 type EstimateCache  = V.Vector Cost
 type ForwardCache   = V.Vector Cost
-data TerrainChange  = TerrainChange Location Cost
 
 newtype Priority = Priority (Int, Int) deriving (Read, Show, Eq, Ord)
 type PathHeap = ISQ.IntPSQ Priority Location
 
-data Env = Env { terrain  :: Terrain
+data Env = Env { terrain  :: T.Terrain
                 , goal    :: Location
                 , start   :: Location
                 , dK      :: Int }
@@ -94,40 +72,28 @@ printVector :: Path -> IO ()
 printVector (Path _ (Vars vector _ _)) = putStrLn . concat $ V.ifoldr' print [] vector
   where
     print i x str
-      | rem i yGridSize == 0 = (show (quot i yGridSize) ++ " ") : p i x
+      | rem i T.yGridSize == 0 = (show (quot i T.yGridSize) ++ " ") : p i x
       | otherwise = p i x
-      where p i x = if rem (i+1) xGridSize == 0 then symbol x :"\n":str else symbol x : str
+      where p i x = if rem (i+1) T.xGridSize == 0 then symbol x :"\n":str else symbol x : str
 
-    symbol x = case compare x costMax of
+    symbol x = case compare x T.costMax of
       EQ -> "∞"
       GT -> "*"
       LT -> "."
 
 
-generateTerrain :: (Int -> Int -> Cost) -> Terrain
-generateTerrain g = V.generate length f
-  where
-    length = xGridSize * yGridSize
-    f v_index = g (v_index `rem` xGridSize) (v_index `quot` yGridSize)
-
-terrain1 :: Terrain
-terrain1 = V.generate (xGridSize * yGridSize) (const 1)
-
-terrainSplitVertical :: Terrain
-terrainSplitVertical = V.generate (xGridSize * yGridSize) (\i -> if odd (i `div` 50) && i `rem` 50 == 0 then costMax else 1)
-
-initialize :: Goal -> Start -> Terrain -> (Env, Vars)
+initialize :: Goal -> Start -> T.Terrain -> (Env, Vars)
 initialize (Goal gx gy) (Start sx sy) terrain = (env, vars)
   where
     gpos = vpos gx gy
-    goal = Location gx gy gpos
-    start = Location sx sy $ vpos sx sy
+    goal = mkLocation gx gy
+    start = mkLocation sx sy
 
     estimate :: V.Vector Int
-    estimate = V.replicate (xGridSize * yGridSize) costMax
+    estimate = V.replicate (T.xGridSize * T.yGridSize) T.costMax
 
     forward :: V.Vector Int
-    forward = V.replicate (xGridSize * yGridSize) costMax V.// [(gpos, 0)]
+    forward = V.replicate (T.xGridSize * T.yGridSize) T.costMax V.// [(gpos, 0)]
 
     dK = 0
 
@@ -135,32 +101,32 @@ initialize (Goal gx gy) (Start sx sy) terrain = (env, vars)
     vars = Vars estimate forward $ ISQ.singleton gpos (Priority (h goal start, 0)) goal
 
 
-newPath :: Goal -> Start -> Terrain -> (Maybe Location, Maybe Path)
-newPath goal start terrain
-  | start === goal  = (Just $ convert goal, Just $ Path env vars)
+newPath :: Goal -> Start -> T.Terrain -> (Maybe T.Location, Maybe Path)
+newPath goal@(Goal gx gy) start terrain
+  | start === goal  = (Just $ T.mkLocation gx gy, Just $ Path env vars)
   | otherwise       = (next_location, Just $ Path env vars')
   where
-    (env, vars)     = initialize goal start terrain
-    vars'           = execState ( runReaderT computeShortestPath env ) vars
-    next_location   = evalState ( runReaderT cheapestMove env ) vars'
+    (env, vars)       = initialize goal start terrain
+    vars'             = execState ( runReaderT computeShortestPath env ) vars
+    next_location     = evalState ( runReaderT cheapestMove env ) vars' >>= (\ (Location x y _) -> return $ T.mkLocation x y )
 
-nextLocation :: Start -> [TerrainChange] -> Path -> (Maybe Location, Maybe Path)
-nextLocation start' change_list path@(Path env@(Env terrain goal start dK) vars)
-  | convert start' == goal    = (Nothing, Nothing)
-  | null change_list          = (next_location, Just path)
-  | otherwise                 = (next_location, Just path')
+nextLocation :: Start -> [T.TerrainChange] -> Path -> (Maybe Location, Maybe Path)
+nextLocation (Start sx sy) change_list path@(Path env@(Env terrain goal start dK) vars)
+  | start' == goal    = (Nothing, Nothing)
+  | null change_list  = (next_location, Just path)
+  | otherwise         = (next_location, Just path')
   where
+    start'        = mkLocation sx sy
     path'         = updateContext start' change_list env vars
     vars'         = execState ( runReaderT computeShortestPath env ) vars
     next_location = evalState ( runReaderT cheapestMove env ) vars'
 
-updateContext :: Start -> [TerrainChange] -> Env -> Vars -> Path
-updateContext s0 change_list env@(Env terrain goal start dK) vars =
+updateContext :: Location -> [T.TerrainChange] -> Env -> Vars -> Path
+updateContext start' change_list env@(Env terrain goal start dK) vars =
 
   Path env' $ execState ( runReaderT adjustVars env' ) vars
 
   where
-    start'    = convert s0
     env'  = Env terrain goal start' $ dK + h start start'
 
     minCost s0 sa sb = do
@@ -169,7 +135,9 @@ updateContext s0 change_list env@(Env terrain goal start dK) vars =
       c_sb <- c s0 sb
       return $ min r_sa (g_sb + c_sb)
 
-    adjustVars = forM_ change_list (\ (TerrainChange v gridCost) -> do
+    adjustVars = forM_ change_list (\ (T.TerrainChange s gridCost) -> do
+      let v = T.convert (\x y -> mkLocation x y) s
+
       (Env _ goal _ _) <- ask
 
       forM_ (filter (/= goal) (neighbors v)) (\u -> do
@@ -181,7 +149,7 @@ updateContext s0 change_list env@(Env terrain goal start dK) vars =
           if c_old > c_v then
             rs u . min r_u $ c_v + g_v
           else when (r_u == c_old + g_v) $
-            foldl' (minCost v) (return costMax) (neighbors u) >>= rs u
+            foldl' (minCost v) (return T.costMax) (neighbors u) >>= rs u
 
           updatePQ u
         )) >> computeShortestPath
@@ -194,7 +162,7 @@ cheapestMove = do
 
   s_next <- foldM (minOfNeighbors start) start $ neighbors start
   g_next <- g s_next
-  return $ if g_next >= costMax then Nothing else Just s_next
+  return $ if g_next >= T.costMax then Nothing else Just s_next
 
   where
     minOfNeighbors s0 sa sb = do
@@ -234,13 +202,13 @@ computeShortestPath = do
       forM_ n updatePQ
       computeShortestPath
     else do
-      gs top costMax
+      gs top T.costMax
       let n = neighbors top
       forM_ (filter (/= goal) (top:n)) (\s -> do
         r_s <- r s
         c_s <- c top s
         when (r_s == c_s + g_top) $ do
-          r'_s <- foldl' (minCost top) (return costMax) (neighbors s)
+          r'_s <- foldl' (minCost top) (return T.costMax) (neighbors s)
           rs s r'_s
         )
       forM_ (top:n) updatePQ
@@ -287,8 +255,8 @@ updatePriority s@(Location x y pos) p = do
   (Vars ec fc pq) <- get
   put (Vars ec fc $ snd (ISQ.alter (const (0, Just (p, s))) pos pq))
 
-terrainCost :: Location -> Terrain -> Cost
-terrainCost (Location _ _ pos) terrain = terrain V.! pos
+terrainCost :: Location -> T.Terrain -> Cost
+terrainCost (Location x y _) terrain = terrain T.! T.mkLocation x y
 
 moveCost :: Location -> Location -> Cost
 moveCost (Location x y _) (Location x' y' _)
@@ -298,7 +266,7 @@ moveCost (Location x y _) (Location x' y' _)
 findMovementCost :: Location -> Location -> PathContext Cost
 findMovementCost s@(Location x y _) s'@(Location x' y' pos')
   | x == x' && y == y' = return 0
-  | otherwise = ask >>= (\(Env costs _ _ _) -> return $ costs V.! pos' + moveCost s s')
+  | otherwise = ask >>= (\(Env terrain _ _ _) -> return $ terrain T.! (T.mkLocation x' y') + moveCost s s')
 c = findMovementCost
 
 findGValue :: Location -> PathContext Cost
