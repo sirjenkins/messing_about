@@ -106,20 +106,21 @@ newPath goal@(Goal gx gy) start terrain
   | start === goal  = (Just $ T.mkLocation gx gy, Just $ Path env vars)
   | otherwise       = (next_location, Just $ Path env vars')
   where
-    (env, vars)       = initialize goal start terrain
-    vars'             = execState ( runReaderT computeShortestPath env ) vars
-    next_location     = evalState ( runReaderT cheapestMove env ) vars' >>= (\ (Location x y _) -> return $ T.mkLocation x y )
+    (env, vars)     = initialize goal start terrain
+    vars'           = execState ( runReaderT computeShortestPath env ) vars
+    next_location   = evalState ( runReaderT cheapestMove env ) vars' >>= (\ (Location x y _) -> return $ T.mkLocation x y )
 
-nextLocation :: Start -> [T.TerrainChange] -> Path -> (Maybe Location, Maybe Path)
-nextLocation (Start sx sy) change_list path@(Path env@(Env terrain goal start dK) vars)
-  | start' == goal    = (Nothing, Nothing)
+nextLocation :: Start -> [T.TerrainChange] -> Maybe Path -> (Maybe T.Location, Maybe Path)
+nextLocation _ _ Nothing = (Nothing, Nothing)
+nextLocation (Start sx sy) change_list (Just path@(Path env@(Env terrain goal start dK) vars))
+  | start' == goal    = (Just $ T.mkLocation sx sy, Nothing)
   | null change_list  = (next_location, Just path)
   | otherwise         = (next_location, Just path')
   where
-    start'        = mkLocation sx sy
-    path'         = updateContext start' change_list env vars
-    vars'         = execState ( runReaderT computeShortestPath env ) vars
-    next_location = evalState ( runReaderT cheapestMove env ) vars'
+    start'         = mkLocation sx sy
+    path'          = updateContext start' change_list env vars
+    vars'          = execState ( runReaderT computeShortestPath env ) vars
+    next_location  = evalState ( runReaderT cheapestMove env ) vars' >>= (\ (Location x y _) -> return $ T.mkLocation x y )
 
 updateContext :: Location -> [T.TerrainChange] -> Env -> Vars -> Path
 updateContext start' change_list env@(Env terrain goal start dK) vars =
