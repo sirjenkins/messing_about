@@ -5,7 +5,6 @@ module Pathfinding (
     , Start (Start)
     , newPath
     , nextLocation
-    , printVector
   ) where
 
 import GHC.Generics (Generic)
@@ -58,28 +57,15 @@ type PathHeap = ISQ.IntPSQ Priority Location
 data Env = Env { terrain  :: T.Terrain
                 , goal    :: Location
                 , start   :: Location
-                , dK      :: Int }
+                , dK      :: Int } deriving (Show)
 
 data Vars = Vars { getEC  :: EstimateCache
                   , getFC :: ForwardCache
-                  , getPQ :: PathHeap }
+                  , getPQ :: PathHeap } deriving (Show)
 
 type PathContext = ReaderT Env (State Vars)
 
-data Path = Path{ getEnv :: Env, getVars :: Vars}
-
-printVector :: Path -> IO ()
-printVector (Path _ (Vars vector _ _)) = putStrLn . concat $ V.ifoldr' print [] vector
-  where
-    print i x str
-      | rem i T.yGridSize == 0 = (show (quot i T.yGridSize) ++ " ") : p i x
-      | otherwise = p i x
-      where p i x = if rem (i+1) T.xGridSize == 0 then symbol x :"\n":str else symbol x : str
-
-    symbol x = case compare x T.costMax of
-      EQ -> "∞"
-      GT -> "*"
-      LT -> "."
+data Path = Path{ getEnv :: Env, getVars :: Vars} deriving (Show)
 
 
 initialize :: Goal -> Start -> T.Terrain -> (Env, Vars)
@@ -273,13 +259,13 @@ c = findMovementCost
 findGValue :: Location -> PathContext Cost
 findGValue (Location _ _ pos) = do
   (Vars ec _ _) <- get
-  return $ ec `V.unsafeIndex` pos
+  return $ ec V.! pos
 g = findGValue
 
 findLookAheadValue :: Location -> PathContext Cost
 findLookAheadValue (Location _ _ pos) = do
   (Vars _ fc _) <- get
-  return $ fc `V.unsafeIndex` pos
+  return $ fc V.! pos
 r = findLookAheadValue
 
 setGValue :: Location -> Cost -> PathContext ()
@@ -297,11 +283,11 @@ setLookAheadValue s@(Location x y pos) val = do
   put (Vars ec fc' pq)
 rs = setLookAheadValue
 
-
-mutableWrite i val v = runST (do
+mutableWrite :: MV.Unbox t => Int -> t -> V.Vector t -> V.Vector t
+mutableWrite i val v = runST $ do
     mv <- V.unsafeThaw v
     MV.write mv i val
-    V.unsafeFreeze mv)
+    V.unsafeFreeze mv
 
 calcPrio :: Location -> PathContext Priority
 calcPrio s = do

@@ -19,8 +19,8 @@ module Terrain (
 import qualified Data.Vector.Unboxed as V
 
 
-xGridSize = 100 :: Int
-yGridSize = 100 :: Int
+xGridSize = 10 :: Int
+yGridSize = 10 :: Int
 xMin = 0 :: Int
 xMax = xGridSize - 1 :: Int
 yMin = 0 :: Int
@@ -29,8 +29,22 @@ yMax = yGridSize - 1 :: Int
 costMax = 1000000 :: Int
 
 data Location = Location !Int !Int deriving (Read, Show, Eq, Ord)
-newtype Terrain = Terrain (V.Vector Int) deriving (Read, Show)
+newtype Terrain = Terrain (V.Vector Int) deriving (Read)
 data TerrainChange  = TerrainChange Location Int
+
+instance Show Terrain where
+  show (Terrain vector) = (concat $ V.ifoldr' print [] vector) ++ "\n"
+    where
+      print i x str
+        | rem i yGridSize == 0 = (show (quot i yGridSize) ++ " ") : p i x
+        | otherwise = p i x
+        where p i x = if rem (i+1) xGridSize == 0 then symbol x :"\n":str else symbol x : str
+
+      symbol x = case compare x costMax of
+        EQ -> "∞"
+        GT -> "*"
+        LT -> "."
+
 
 mkLocation :: Int -> Int -> Location
 mkLocation x y = Location x y
