@@ -1,3 +1,4 @@
+{-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE DeriveGeneric #-}
 module Pathfinding (
       Path
@@ -19,6 +20,7 @@ import Control.Monad (when, foldM)
 import Control.Monad.State
 import Control.Monad.ST (runST)
 import Control.Monad.Reader
+import Control.Monad.Primitive
 import qualified Terrain as T
 
 
@@ -93,7 +95,7 @@ newPath goal@(Goal gx gy) start terrain
   | otherwise       = (next_location, Just $ Path env vars')
   where
     (env, vars)     = initialize goal start terrain
-    vars'           = execState ( runReaderT computeShortestPath env ) vars
+    vars'           = runST $ execStateT ( runReaderT computeShortestPath env ) vars
     next_location   = evalState ( runReaderT cheapestMove env ) vars' >>= (\ (Location x y _) -> return $ T.mkLocation x y )
 
 nextLocation :: Start -> [T.TerrainChange] -> Maybe Path -> (Maybe T.Location, Maybe Path)
@@ -105,41 +107,41 @@ nextLocation (Start sx sy) change_list (Just path@(Path env@(Env terrain goal st
   where
     start'         = mkLocation sx sy
     path'          = updateContext start' change_list env vars
-    vars'          = execState ( runReaderT computeShortestPath env ) vars
+    vars'          = runST $ execStateT ( runReaderT computeShortestPath env ) vars
     next_location  = evalState ( runReaderT cheapestMove env ) vars' >>= (\ (Location x y _) -> return $ T.mkLocation x y )
 
 updateContext :: Location -> [T.TerrainChange] -> Env -> Vars -> Path
 updateContext start' change_list env@(Env terrain goal start dK) vars =
-
-  Path env' $ execState ( runReaderT adjustVars env' ) vars
-
-  where
-    env'  = Env terrain goal start' $ dK + h start start'
-
-    minCost s0 sa sb = do
-      r_sa <- sa
-      g_sb <- g sb
-      c_sb <- c s0 sb
-      return $ min r_sa (g_sb + c_sb)
-
-    adjustVars = forM_ change_list (\ (T.TerrainChange s gridCost) -> do
-      let v = T.convert (\x y -> mkLocation x y) s
-
-      (Env _ goal _ _) <- ask
-
-      forM_ (filter (/= goal) (neighbors v)) (\u -> do
-          r_u <- r u
-          g_v <- g v
-          c_v <- c u v
-          let c_old = gridCost + moveCost u v
-
-          if c_old > c_v then
-            rs u . min r_u $ c_v + g_v
-          else when (r_u == c_old + g_v) $
-            foldl' (minCost v) (return T.costMax) (neighbors u) >>= rs u
-
-          updatePQ u
-        )) >> computeShortestPath
+  undefined
+--  Path env' $ execState ( runReaderT adjustVars env' ) vars
+--
+--  where
+--    env'  = Env terrain goal start' $ dK + h start start'
+--
+--    minCost s0 sa sb = do
+--      r_sa <- sa
+--      g_sb <- g sb
+--      c_sb <- c s0 sb
+--      return $ min r_sa (g_sb + c_sb)
+--
+--    adjustVars = forM_ change_list (\ (T.TerrainChange s gridCost) -> do
+--      let v = T.convert (\x y -> mkLocation x y) s
+--
+--      (Env _ goal _ _) <- ask
+--
+--      forM_ (filter (/= goal) (neighbors v)) (\u -> do
+--          r_u <- r u
+--          g_v <- g v
+--          c_v <- c u v
+--          let c_old = gridCost + moveCost u v
+--
+--          if c_old > c_v then
+--            rs u . min r_u $ c_v + g_v
+--          else when (r_u == c_old + g_v) $
+--            foldl' (minCost v) (return T.costMax) (neighbors u) >>= rs u
+--
+--          updatePQ u
+--        )) >> computeShortestPath
 
 cheapestMove :: PathContext (Maybe Location)
 cheapestMove = do
@@ -159,56 +161,74 @@ cheapestMove = do
       c_sb <- c s0 sb
       return $ if g_sa + c_sa <= g_sb + c_sb then sa else sb
 
-computeShortestPath :: PathContext ()
+--computeShortestPath :: PathContext ()
+computeShortestPath :: (PrimMonad m, MonadState Vars m, MonadReader Env m) => m ()
 computeShortestPath = do
+    (Vars ec fc pq) <- get
+    m_ec <- V.thaw ec
+    m_fc <- V.thaw fc
+
+    loop m_ec m_fc
+
+    (Vars _ _ pq') <- get
+    ec' <- V.unsafeFreeze m_ec
+    fc' <- V.unsafeFreeze m_fc
+    put (Vars ec' fc' pq')
+
+loop :: (MonadReader Env m, MonadState Vars m, PrimMonad m) => 
+  MV.MVector (PrimState m) Int -> MV.MVector (PrimState m) Int -> m ()
+loop m_ec m_fc = do
   (Env _ goal start _) <- ask
 
   prio_start      <- calcPrio start
-  (top, prio_top) <- getTopU
-  prio_top'       <- calcPrio top
-  r_start         <- r start
-  g_start         <- g start
+--    (top, prio_top) <- getTopU
+--    prio_top'       <- calcPrio top
+--    r_start         <- r start
+--    g_start         <- g start
+--
+--    r_top <- r top
+--    g_top <- g top
+  MV.write m_ec 0 (15 :: Int)
+  MV.write m_fc 0 (15 :: Int)
+--    when (prio_top < prio_start || r_start > g_start) $
+--      if prio_top < prio_top' then do
+--        updatePriority top prio_top'
+--        loop m_ec m_fc
+--      else if g_top > r_top then do
+--        mutableWrite top r_top m_ec
+--        g_top' <- g top
+--        removeKey top
+--        let n = neighbors top
+--        forM_ (filter (/= goal) n) (\s -> do
+--            r_s <- r s
+--            c_s <- c top s
+--            mutableWrite s (min r_s $ c_s + g_top') m_fc
+--          )
+--        forM_ n updatePQ
+--        loop m_ec m_fc
+--      else do
+--        mutableWrite top T.costMax m_ec
+--        let n = neighbors top
+--        forM_ (filter (/= goal) (top:n)) (\s -> do
+--          r_s <- r s
+--          c_s <- c top s
+--          when (r_s == c_s + g_top) $ do
+--            r'_s <- foldl' (minCost top) (return T.costMax) (neighbors s)
+--            mutableWrite s r'_s m_fc
+--          )
+--        forM_ (top:n) updatePQ
+--        loop m_ec m_fc
+--
+--    where
+--      minCost s0 sa sb = do
+--        r_sa <- sa
+--        g_sb <- g sb
+--        c_sb <- c s0 sb
+--        return $ min r_sa (g_sb + c_sb)
 
-  r_top <- r top
-  g_top <- g top
 
-  when (prio_top < prio_start || r_start > g_start) $
-    if prio_top < prio_top' then do
-      updatePriority top prio_top'
-      computeShortestPath
-    else if g_top > r_top then do
-      gs top r_top
-      g_top' <- g top
-      removeKey top
-      let n = neighbors top
-      forM_ (filter (/= goal) n) (\s -> do
-          r_s <- r s
-          c_s <- c top s
-          rs s . min r_s $ c_s + g_top'
-        )
-      forM_ n updatePQ
-      computeShortestPath
-    else do
-      gs top T.costMax
-      let n = neighbors top
-      forM_ (filter (/= goal) (top:n)) (\s -> do
-        r_s <- r s
-        c_s <- c top s
-        when (r_s == c_s + g_top) $ do
-          r'_s <- foldl' (minCost top) (return T.costMax) (neighbors s)
-          rs s r'_s
-        )
-      forM_ (top:n) updatePQ
-      computeShortestPath
 
-  where
-    minCost s0 sa sb = do
-      r_sa <- sa
-      g_sb <- g sb
-      c_sb <- c s0 sb
-      return $ min r_sa (g_sb + c_sb)
-
-updatePQ :: Location -> PathContext ()
+updatePQ :: (MonadReader Env m, MonadState Vars m, PrimMonad m) => Location -> m ()
 updatePQ u = do
   g_u <- g u
   r_u <- r u
@@ -268,28 +288,10 @@ findLookAheadValue (Location _ _ pos) = do
   return $ fc V.! pos
 r = findLookAheadValue
 
-setGValue :: Location -> Cost -> PathContext ()
-setGValue s@(Location x y pos) val = do
-  (Vars ec fc pq) <- get
-  let ec' = mutableWrite pos val ec
-  put (Vars ec' fc pq)
-gs = setGValue
+--mutableWrite :: MV.Unbox t => Int -> t -> V.Vector t -> V.Vector t
+mutableWrite (Location _ _ pos) val mv = MV.write mv pos val
 
-
-setLookAheadValue :: Location -> Cost -> PathContext ()
-setLookAheadValue s@(Location x y pos) val = do
-  (Vars ec fc pq) <- get
-  let fc' = mutableWrite pos val fc
-  put (Vars ec fc' pq)
-rs = setLookAheadValue
-
-mutableWrite :: MV.Unbox t => Int -> t -> V.Vector t -> V.Vector t
-mutableWrite i val v = runST $ do
-    mv <- V.unsafeThaw v
-    MV.write mv i val
-    V.unsafeFreeze mv
-
-calcPrio :: Location -> PathContext Priority
+calcPrio :: (MonadReader Env m, MonadState Vars m, PrimMonad m) => Location -> m Priority
 calcPrio s = do
   (Env c goal start dK) <- ask
   g_cost <- findGValue s
